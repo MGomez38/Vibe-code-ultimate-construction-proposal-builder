@@ -1181,188 +1181,186 @@
  },
  "fittings": [
   {
-   "name": "Saddle",
+   "name": "Ductmate 35",
    "unit": "\"",
+   "group": "Ductwork",
+   "size_label": "Half girth",
    "sizes": [
     {
-     "size": 12,
-     "price": 103.65
-    },
-    {
-     "size": 14,
-     "price": 107.24
-    },
-    {
-     "size": 16,
-     "price": 110.84
-    },
-    {
      "size": 18,
-     "price": 114.43
+     "price": 40.79
     },
     {
      "size": 20,
-     "price": 118.03
-    },
-    {
-     "size": 22,
-     "price": 121.62
+     "price": 43.1
     },
     {
      "size": 24,
-     "price": 125.21
-    },
-    {
-     "size": 26,
-     "price": 128.81
+     "price": 46.71
     },
     {
      "size": 28,
-     "price": 132.4
-    },
-    {
-     "size": 30,
-     "price": 136
+     "price": 50.31
     },
     {
      "size": 32,
-     "price": 139.59
-    },
-    {
-     "size": 34,
-     "price": 143.19
+     "price": 53.92
     },
     {
      "size": 36,
-     "price": 146.78
-    },
-    {
-     "size": 38,
-     "price": 150.37
+     "price": 57.52
     },
     {
      "size": 40,
-     "price": 153.97
-    },
-    {
-     "size": 42,
-     "price": 157.56
+     "price": 61.13
     },
     {
      "size": 44,
-     "price": 161.16
-    },
-    {
-     "size": 46,
-     "price": 164.75
+     "price": 64.73
     },
     {
      "size": 48,
-     "price": 168.34
+     "price": 68.34
     },
     {
      "size": 50,
-     "price": 171.94
+     "price": 70.65
+    },
+    {
+     "size": 56,
+     "price": 75.55
     },
     {
      "size": 60,
-     "price": 180.41
+     "price": 79.15
+    },
+    {
+     "size": 64,
+     "price": 82.76
+    },
+    {
+     "size": 68,
+     "price": 86.36
+    },
+    {
+     "size": 72,
+     "price": 89.97
+    },
+    {
+     "size": 76,
+     "price": 93.57
+    },
+    {
+     "size": 80,
+     "price": 97.18
+    },
+    {
+     "size": 84,
+     "price": 100.79
+    },
+    {
+     "size": 88,
+     "price": 104.39
+    },
+    {
+     "size": 96,
+     "price": 118.72
     }
    ]
   },
   {
-   "name": "Saddle upper",
+   "name": "Ductmate 35 (0.8 discount)",
    "unit": "\"",
+   "group": "Ductwork",
+   "size_label": "Half girth",
    "sizes": [
     {
-     "size": 12,
-     "price": 61.26
-    },
-    {
-     "size": 14,
-     "price": 62.83
-    },
-    {
-     "size": 16,
-     "price": 64.4
-    },
-    {
      "size": 18,
-     "price": 65.97
+     "price": 32.63
     },
     {
      "size": 20,
-     "price": 67.54
-    },
-    {
-     "size": 22,
-     "price": 69.11
+     "price": 34.48
     },
     {
      "size": 24,
-     "price": 70.69
-    },
-    {
-     "size": 26,
-     "price": 72.26
+     "price": 37.36
     },
     {
      "size": 28,
-     "price": 73.83
-    },
-    {
-     "size": 30,
-     "price": 75.4
+     "price": 40.25
     },
     {
      "size": 32,
-     "price": 76.97
-    },
-    {
-     "size": 34,
-     "price": 78.54
+     "price": 43.13
     },
     {
      "size": 36,
-     "price": 80.12
-    },
-    {
-     "size": 38,
-     "price": 81.69
+     "price": 46.02
     },
     {
      "size": 40,
-     "price": 83.26
-    },
-    {
-     "size": 42,
-     "price": 84.83
+     "price": 48.9
     },
     {
      "size": 44,
-     "price": 86.4
-    },
-    {
-     "size": 46,
-     "price": 87.98
+     "price": 51.79
     },
     {
      "size": 48,
-     "price": 89.55
+     "price": 54.67
     },
     {
      "size": 50,
-     "price": 91.12
+     "price": 56.52
     },
     {
-     "size": 52,
-     "price": 92.69
+     "size": 56,
+     "price": 60.44
+    },
+    {
+     "size": 60,
+     "price": 63.32
+    },
+    {
+     "size": 64,
+     "price": 66.21
+    },
+    {
+     "size": 68,
+     "price": 69.09
+    },
+    {
+     "size": 72,
+     "price": 71.98
+    },
+    {
+     "size": 76,
+     "price": 74.86
+    },
+    {
+     "size": 80,
+     "price": 77.74
+    },
+    {
+     "size": 84,
+     "price": 80.63
+    },
+    {
+     "size": 88,
+     "price": 83.51
+    },
+    {
+     "size": 96,
+     "price": 94.97
     }
    ]
   },
   {
    "name": "Flex, round",
    "unit": "\"",
+   "group": "Ductwork",
+   "size_label": "Size",
    "sizes": [
     {
      "size": 6,
@@ -1447,8 +1445,10 @@
    ]
   },
   {
-   "name": "Flex, square (half girth)",
+   "name": "Flex, square",
    "unit": "\"",
+   "group": "Ductwork",
+   "size_label": "Half girth",
    "sizes": [
     {
      "size": 18,
@@ -1531,6 +1531,8 @@
   {
    "name": "Round cap",
    "unit": "\"",
+   "group": "Ductwork",
+   "size_label": "Size",
    "sizes": [
     {
      "size": 8,
@@ -1673,6 +1675,8 @@
   {
    "name": "Round cap, caulked",
    "unit": "\"",
+   "group": "Ductwork",
+   "size_label": "Size",
    "sizes": [
     {
      "size": 8,
@@ -1809,6 +1813,190 @@
     {
      "size": 53,
      "price": 162.53
+    }
+   ]
+  },
+  {
+   "name": "Chimney saddle",
+   "unit": "\"",
+   "group": "Chimney & roof",
+   "size_label": "Width",
+   "sizes": [
+    {
+     "size": 12,
+     "price": 103.65
+    },
+    {
+     "size": 14,
+     "price": 107.24
+    },
+    {
+     "size": 16,
+     "price": 110.84
+    },
+    {
+     "size": 18,
+     "price": 114.43
+    },
+    {
+     "size": 20,
+     "price": 118.03
+    },
+    {
+     "size": 22,
+     "price": 121.62
+    },
+    {
+     "size": 24,
+     "price": 125.21
+    },
+    {
+     "size": 26,
+     "price": 128.81
+    },
+    {
+     "size": 28,
+     "price": 132.4
+    },
+    {
+     "size": 30,
+     "price": 136
+    },
+    {
+     "size": 32,
+     "price": 139.59
+    },
+    {
+     "size": 34,
+     "price": 143.19
+    },
+    {
+     "size": 36,
+     "price": 146.78
+    },
+    {
+     "size": 38,
+     "price": 150.37
+    },
+    {
+     "size": 40,
+     "price": 153.97
+    },
+    {
+     "size": 42,
+     "price": 157.56
+    },
+    {
+     "size": 44,
+     "price": 161.16
+    },
+    {
+     "size": 46,
+     "price": 164.75
+    },
+    {
+     "size": 48,
+     "price": 168.34
+    },
+    {
+     "size": 50,
+     "price": 171.94
+    },
+    {
+     "size": 60,
+     "price": 180.41
+    }
+   ]
+  },
+  {
+   "name": "Chimney saddle upper",
+   "unit": "\"",
+   "group": "Chimney & roof",
+   "size_label": "Width",
+   "sizes": [
+    {
+     "size": 12,
+     "price": 61.26
+    },
+    {
+     "size": 14,
+     "price": 62.83
+    },
+    {
+     "size": 16,
+     "price": 64.4
+    },
+    {
+     "size": 18,
+     "price": 65.97
+    },
+    {
+     "size": 20,
+     "price": 67.54
+    },
+    {
+     "size": 22,
+     "price": 69.11
+    },
+    {
+     "size": 24,
+     "price": 70.69
+    },
+    {
+     "size": 26,
+     "price": 72.26
+    },
+    {
+     "size": 28,
+     "price": 73.83
+    },
+    {
+     "size": 30,
+     "price": 75.4
+    },
+    {
+     "size": 32,
+     "price": 76.97
+    },
+    {
+     "size": 34,
+     "price": 78.54
+    },
+    {
+     "size": 36,
+     "price": 80.12
+    },
+    {
+     "size": 38,
+     "price": 81.69
+    },
+    {
+     "size": 40,
+     "price": 83.26
+    },
+    {
+     "size": 42,
+     "price": 84.83
+    },
+    {
+     "size": 44,
+     "price": 86.4
+    },
+    {
+     "size": 46,
+     "price": 87.98
+    },
+    {
+     "size": 48,
+     "price": 89.55
+    },
+    {
+     "size": 50,
+     "price": 91.12
+    },
+    {
+     "size": 52,
+     "price": 92.69
     }
    ]
   }

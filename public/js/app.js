@@ -2497,11 +2497,15 @@ PAGES.duct = async () => {
   // What you can put on a quote. Duct is computed; the rest are your own tables.
   const ells = d.ells, trans = d.transitions;
   const KINDS = [
-    ...(m ? [{ id: 'duct', label: 'Duct / register tap', note: 'any gauge' }] : []),
-    ...(ells ? [{ id: 'ell', label: ells.name, note: `${ells.combos.length} sizes` }] : []),
-    ...(trans ? [{ id: 'trans', label: 'Transition', note: 'any two openings' }] : []),
-    ...fittings.map((f, i) => ({ id: 'f' + i, label: f.name, note: `${f.sizes.length} sizes`, fitting: f })),
+    ...(m ? [{ id: 'duct', label: 'Duct / register tap', note: 'any gauge', group: 'Ductwork' }] : []),
+    ...(ells ? [{ id: 'ell', label: ells.name, note: `${ells.combos.length} sizes`, group: 'Ductwork' }] : []),
+    ...(trans ? [{ id: 'trans', label: 'Transition', note: 'any two openings', group: 'Ductwork' }] : []),
+    ...fittings.map((f, i) => ({ id: 'f' + i, label: f.name, note: `${f.sizes.length} sizes`,
+      group: f.group || 'Ductwork', fitting: f })),
   ];
+  // Chimney saddles are roof work. Mixed into the duct list they are just
+  // noise an estimator has to learn to scroll past.
+  const GROUPS = [...new Set(KINDS.map(k => k.group))];
   const ellW = ells ? [...new Set(ells.combos.map(c => c.w))].sort((a, b) => a - b) : [];
 
   const cart = [];
@@ -2512,9 +2516,13 @@ PAGES.duct = async () => {
       <div>
         <div class="card">
           <h3>What are you quoting?</h3>
-          <div class="kind-pick" id="kind-pick">
-            ${KINDS.map(k => `<button class="kind ${k.id === kind ? 'on' : ''}" data-kind="${k.id}">
-              <b>${esc(k.label)}</b><span>${esc(k.note)}</span></button>`).join('')}
+          <div id="kind-pick">
+            ${GROUPS.map(g => `
+              ${GROUPS.length > 1 ? `<div class="kind-group">${esc(g)}</div>` : ''}
+              <div class="kind-pick">
+                ${KINDS.filter(k => k.group === g).map(k => `<button class="kind ${k.id === kind ? 'on' : ''}" data-kind="${k.id}">
+                  <b>${esc(k.label)}</b><span>${esc(k.note)}</span></button>`).join('')}
+              </div>`).join('')}
           </div>
           <div id="pick-form"></div>
           <div id="pick-price"></div>
@@ -2555,7 +2563,7 @@ PAGES.duct = async () => {
          </form>`
       : k.fitting
       ? `<form id="pf" class="form-grid">
-           <label class="fld">Size<select name="size">${k.fitting.sizes.map(s =>
+           <label class="fld">${esc(k.fitting.size_label || 'Size')}<select name="size">${k.fitting.sizes.map(s =>
              `<option value="${s.size}">${s.size}${esc(k.fitting.unit || '"')}</option>`).join('')}</select></label>
            <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
          </form>`

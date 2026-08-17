@@ -689,3 +689,8 @@ tr.dc-here td { background: #fffaf0; font-weight: 700; }
 .pick-total .btn { margin-left: auto; }
 .pick-why { margin-top: 12px; }
 .pick-why summary { font-size: 12.5px; color: var(--blue); cursor: pointer; font-weight: 600; }
+.kind-group {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.1px;
+  color: var(--mist); margin: 14px 0 7px;
+}
+.kind-group:first-child { margin-top: 0; }
