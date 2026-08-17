@@ -71,6 +71,8 @@ One thing to know: only intercompany work sitting inside a **completed** job is 
 
 **The shop build sheet.** The office attaches drawings, sketches and reference photos (JPG, PNG or PDF) to a work order. The shop opens it on their phone under **My Work** and gets the whole packet: what they're building, the cut and material list, and every plan full-screen with a tap. The shop queue shows all open tickets, not just the ones assigned to them, so a bench hand can pick up the next job — but only the assignee can close it out. Quantities are there; costs and prices are not, and never leave the server for that screen.
 
+**Logging what the shop actually used.** On any build sheet the bench hits **+ Log Materials Used** and records what came off the rack: metal type (galvanized, stainless, aluminum, CRS, copper…), gauge (26 ga through 1/4", plus decimal for aluminum), sheet size, and how many. Solder is entered **in inches**, the way it comes off the bar. Anything picked from inventory deducts from stock and warns if the quantity is bigger than what was on the rack. Once the bench logs something it supersedes the planned items when costing the ticket, so the estimate and the reality never get added together. **Shop Consumption** in the office rolls it up by metal and gauge, by sheet size, and by inches of solder.
+
 **Photos and voice from the job site.** Crew attach photos to any job card — the browser downscales them before upload so they go through on bad signal — and can dictate the work performed and problem notes instead of typing with gloves on. Photos appear on the job card in the office and on the job's detail page.
 
 **Works with no signal.** The portal is an installable PWA. In a basement with no bars, clock-ins, clock-outs and job cards save to the phone and sync automatically the moment signal returns, keeping the real timestamps. Replayed entries are de-duplicated server-side, so a flaky connection never double-punches anyone.
@@ -113,7 +115,7 @@ Everything lives under `data/` — the database, uploaded photos, backups, and t
 npm test
 ```
 
-37 tests over `lib/finance.js` and `lib/scope.js` — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
+42 tests over `lib/finance.js` and `lib/scope.js` — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
 
 ## Security notes
 

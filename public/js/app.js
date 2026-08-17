@@ -158,6 +158,7 @@ const TITLES = {
   payroll: ['Payroll', 'Hours, gross pay and certified payroll for public work'],
   subs: ['Subcontractors', 'Trades, insurance certificates and expiry dates'],
   group: ['Group View', 'Both companies side by side, with intercompany work netted out'],
+  consumption: ['Shop Consumption', 'Metal, gauge and solder actually used at the bench'],
   reports: ['Reports', 'Where the money comes from and where it goes'],
   users: ['Users & Access', 'Who can sign in, and what they can see'],
   settings: ['Settings', 'Company details, pricing defaults and email delivery'],
@@ -1207,6 +1208,9 @@ PAGES.workorders = async () => {
 
         <h3 style="margin:18px 0 4px;font-size:13px">Plans &amp; Photos <span class="hint">what the shop sees on their phone</span></h3>
         <div id="w-plans"></div>
+
+        ${w ? `<h3 style="margin:18px 0 4px;font-size:13px">Actually Used <span class="hint">logged at the bench</span></h3>
+        <div id="w-usage"><div class="empty" style="padding:14px">Loading…</div></div>` : ''}
       </div>
       <div class="modal-foot">
         ${w ? '<button class="btn danger" id="w-del" style="margin-right:auto">Delete</button>' : ''}
@@ -1216,6 +1220,29 @@ PAGES.workorders = async () => {
     lineItemEditor($('#w-items'), items);
     attachmentEditor($('#w-plans'), 'work_order', w ? w.id : null,
       'Save the work order first, then attach drawings and reference photos.');
+    if (w) api(`workorders/${w.id}/usage`).then(rows => {
+      const el = $('#w-usage'); if (!el) return;
+      const cost = rows.reduce((s, u) => s + u.qty * u.unit_cost, 0);
+      const solder = rows.filter(u => u.kind === 'solder').reduce((s, u) => s + u.qty, 0);
+      el.innerHTML = rows.length ? `<table class="tbl"><thead><tr>
+          <th>What</th><th>Metal / gauge</th><th>Size</th><th class="num">Qty</th><th class="num">Cost</th><th>Who</th>
+        </tr></thead><tbody>
+          ${rows.map(u => `<tr>
+            <td>${esc(u.description)}${u.notes ? `<div class="muted" style="font-size:11.5px">${esc(u.notes)}</div>` : ''}</td>
+            <td class="muted">${esc([u.metal_type, u.gauge].filter(Boolean).join(' ') || '—')}</td>
+            <td class="muted">${esc(u.size || '—')}</td>
+            <td class="num strong">${u.qty} <span class="muted">${esc(u.unit)}</span></td>
+            <td class="num">${money(u.qty * u.unit_cost)}</td>
+            <td class="muted">${esc(u.employee_name || '')}</td></tr>`).join('')}
+        </tbody></table>
+        <div class="quote-summary" style="margin-top:10px">
+          <div>Lines<b>${rows.length}</b></div>
+          ${solder ? `<div>Solder<b>${round1(solder)}"</b></div>` : ''}
+          <div class="grand">Material cost<b>${money(cost)}</b></div>
+        </div>
+        <p class="muted" style="font-size:12px;margin-top:8px">Once the bench logs anything, this replaces the planned items above when costing the ticket.</p>`
+        : '<div class="empty" style="padding:14px;font-size:13px">Nothing logged at the bench yet — the shop adds this from their phone.</div>';
+    }).catch(() => {});
     $('#w-save').onclick = async () => {
       const f = formData($('#w-form'));
       if (!f.title) return toast('Title is required', 'err');
@@ -1964,6 +1991,79 @@ PAGES.invoices = async () => {
       await api('invoices/' + inv.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
     };
   }
+};
+
+const round1 = n => Math.round((Number(n) || 0) * 10) / 10;
+
+// ---------------------------------------------------------------- SHOP CONSUMPTION
+PAGES.consumption = async () => {
+  const from = new Date(); from.setDate(from.getDate() - 30);
+  let range = { from: from.toISOString().slice(0, 10), to: todayStr() };
+
+  async function render() {
+    const d = await api(`consumption?from=${range.from}&to=${range.to}`);
+    const maxMetal = Math.max(...d.by_metal.map(m => m.cost), 1);
+    view.innerHTML = `
+      <div class="toolbar">
+        <div class="filters">
+          <label class="fld" style="flex-direction:row;align-items:center;gap:8px">From<input type="date" id="c-from" value="${range.from}"></label>
+          <label class="fld" style="flex-direction:row;align-items:center;gap:8px">To<input type="date" id="c-to" value="${range.to}"></label>
+          <button class="btn ghost sm" id="c-go">Run</button>
+        </div>
+        <span class="muted">Logged by the shop at the bench, not estimated.</span>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Material Cost</div><div class="kpi-value">${money0(d.totals.cost)}</div><div class="kpi-note">${d.totals.lines} lines logged</div></div>
+        <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Solder Used</div><div class="kpi-value">${round1(d.solder.total_inches)}"</div><div class="kpi-note">${round1(d.solder.total_inches / 12)} ft · ${money0(d.solder.total_cost)}</div></div>
+        <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Metal Types</div><div class="kpi-value">${d.by_metal.length}</div><div class="kpi-note">distinct type + gauge</div></div>
+        <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Sheet Sizes</div><div class="kpi-value">${d.by_size.length}</div><div class="kpi-note">across the period</div></div>
+      </div>
+
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Metal By Type &amp; Gauge</h3>
+          ${d.by_metal.length ? d.by_metal.map(m => `
+            <div class="bar-row">
+              <span class="lbl">${esc(m.key)}</span>
+              <span class="track"><i style="width:${Math.round(m.cost / maxMetal * 100)}%"></i></span>
+              <span class="val">${round1(m.qty)} ${esc(m.unit)}</span>
+            </div>`).join('') : '<div class="empty">No metal logged in this period.</div>'}
+        </div>
+        <div class="card">
+          <h3>Solder <span class="hint">measured in inches at the bench</span></h3>
+          ${d.solder.by_type.length ? `<table class="tbl"><thead><tr><th>Type</th><th class="num">Inches</th><th class="num">Feet</th><th class="num">Cost</th></tr></thead><tbody>
+            ${d.solder.by_type.map(s => `<tr>
+              <td>${esc(s.key)}</td><td class="num strong">${round1(s.qty)}"</td>
+              <td class="num muted">${round1(s.qty / 12)}</td><td class="num">${money(s.cost)}</td></tr>`).join('')}
+          </tbody></table>` : '<div class="empty">No solder logged in this period.</div>'}
+          <h3 style="margin-top:16px">By Sheet Size</h3>
+          ${d.by_size.length ? `<table class="tbl"><tbody>
+            ${d.by_size.map(s => `<tr><td>${esc(s.key)}</td><td class="num strong">${round1(s.qty)} ${esc(s.unit)}</td><td class="num muted">${money(s.cost)}</td></tr>`).join('')}
+          </tbody></table>` : '<div class="empty">—</div>'}
+        </div>
+      </div>
+
+      <div class="card section-gap">
+        <h3>Every Line <span class="hint">newest first</span></h3>
+        ${d.rows.length ? `<table class="tbl"><thead><tr>
+          <th>When</th><th>Ticket / Job</th><th>What</th><th>Metal</th><th>Gauge</th><th>Size</th><th class="num">Qty</th><th class="num">Cost</th><th>Who</th>
+        </tr></thead><tbody>
+          ${d.rows.map(r => `<tr>
+            <td class="mono muted">${esc((r.logged_at || '').slice(5, 16))}</td>
+            <td class="mono">${esc(r.wo_number || r.job_number || '—')}</td>
+            <td>${esc(r.description)}${r.notes ? `<div class="muted" style="font-size:11.5px">${esc(r.notes)}</div>` : ''}</td>
+            <td class="muted">${esc(r.metal_type || '—')}</td>
+            <td class="muted">${esc(r.gauge || '—')}</td>
+            <td class="muted">${esc(r.size || '—')}</td>
+            <td class="num strong ${r.kind === 'solder' ? 'warnq' : ''}">${round1(r.qty)} ${esc(r.unit)}</td>
+            <td class="num">${money(r.qty * r.unit_cost)}</td>
+            <td class="muted">${esc(r.employee_name || '')}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">Nothing logged in this period.</div>'}
+      </div>`;
+    $('#c-go').onclick = () => { range = { from: $('#c-from').value, to: $('#c-to').value }; render(); };
+  }
+  await render();
 };
 
 // ---------------------------------------------------------------- GROUP VIEW

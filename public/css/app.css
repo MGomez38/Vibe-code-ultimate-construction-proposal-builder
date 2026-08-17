@@ -479,6 +479,8 @@ a.plain:hover { text-decoration: underline; }
   background: #e7effc; padding: 1px 6px; border-radius: 5px; white-space: nowrap;
 }
 
+.warnq { color: var(--amber-deep); }
+
 /* the customer's copy is out of date */
 .drift {
   display: inline-block; margin-top: 3px; font-size: 10.5px; font-weight: 800;

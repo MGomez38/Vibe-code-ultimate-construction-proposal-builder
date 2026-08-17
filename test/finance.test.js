@@ -230,6 +230,58 @@ describe('jobFinancials', () => {
   });
 });
 
+// ---------------------------------------------------------------- shop consumption
+describe('material logged at the bench', () => {
+  let db, F, woId, jobId;
+
+  beforeEach(() => {
+    db = freshDb();
+    F = makeFinance(db);
+    db.prepare(`INSERT INTO clients (name) VALUES ('Acme')`).run();
+    jobId = db.prepare(`INSERT INTO jobs (job_number, client_id, title, status, sold_price)
+      VALUES ('J-1', 1, 'Job', 'in_progress', 10000)`).run().lastInsertRowid;
+    woId = db.prepare(`INSERT INTO work_orders (wo_number, title, items, labor_hours, labor_rate, sold_price)
+      VALUES ('WO-1', 'Fab', ?, 10, 60, 5000)`)
+      .run(JSON.stringify([{ desc: 'Planned steel', qty: 10, unit_cost: 50, unit_price: 90 }])).lastInsertRowid;
+  });
+
+  const log = (fields) => db.prepare(`INSERT INTO material_usage
+    (work_order_id, job_id, kind, metal_type, gauge, size, description, qty, unit, unit_cost)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(fields.work_order_id || null, fields.job_id || null,
+    fields.kind || 'metal', fields.metal_type || '', fields.gauge || '', fields.size || '',
+    fields.description || 'Material', fields.qty, fields.unit || 'ea', fields.unit_cost || 0);
+
+  test('planned items cost the ticket until the bench logs something', () => {
+    assert.equal(F.woFinancials(db.prepare('SELECT * FROM work_orders WHERE id = ?').get(woId)).material_cost, 500);
+  });
+
+  test('logged usage replaces the plan so a ticket is never costed twice', () => {
+    log({ work_order_id: woId, metal_type: 'Galvanized', gauge: '16 ga', size: '4x10 sheet', qty: 3, unit: 'sheet', unit_cost: 68 });
+    const f = F.woFinancials(db.prepare('SELECT * FROM work_orders WHERE id = ?').get(woId));
+    assert.equal(f.logged_material_cost, 204);
+    assert.equal(f.planned_material_cost, 500, 'the estimate is kept for comparison');
+    assert.equal(f.material_cost, 204, 'costing uses what was actually pulled');
+  });
+
+  test('solder is costed by the inch alongside the metal', () => {
+    log({ work_order_id: woId, metal_type: 'Stainless 304', gauge: '16 ga', qty: 2, unit: 'sheet', unit_cost: 214 });
+    log({ work_order_id: woId, kind: 'solder', description: 'Solder 50/50', qty: 96, unit: 'in', unit_cost: 0.42 });
+    const f = F.woFinancials(db.prepare('SELECT * FROM work_orders WHERE id = ?').get(woId));
+    assert.equal(f.logged_material_cost, 428 + 40.32);
+  });
+
+  test('usage logged straight against a job adds to that job\'s material cost', () => {
+    db.prepare(`INSERT INTO job_materials (job_id, description, qty, unit_cost) VALUES (?,?,?,?)`).run(jobId, 'Lumber', 10, 25);
+    log({ job_id: jobId, kind: 'solder', description: 'Solder', qty: 120, unit: 'in', unit_cost: 0.5 });
+    assert.equal(F.jobFinancials(jobId).material_cost, 250 + 60);
+  });
+
+  test('a ticket with no usage and no items costs nothing in materials', () => {
+    const bare = db.prepare(`INSERT INTO work_orders (wo_number, title, items, sold_price) VALUES ('WO-2','Bare','[]',100)`).run().lastInsertRowid;
+    assert.equal(F.woFinancials(db.prepare('SELECT * FROM work_orders WHERE id = ?').get(bare)).material_cost, 0);
+  });
+});
+
 // ---------------------------------------------------------------- rounding
 describe('rounding', () => {
   test('round2 keeps values at exact cents', () => {

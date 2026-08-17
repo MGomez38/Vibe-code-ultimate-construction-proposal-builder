@@ -407,6 +407,21 @@ async function pageWorkDetail(id) {
       <div class="p-empty">No drawings attached yet. Ask the office to add them — they show up here automatically.</div>
     </div>` : ''}
 
+    <div class="pc">
+      <h3>Materials Used<span class="r">${w.usage.length} logged</span></h3>
+      ${w.usage.length ? `<div class="used-list">
+        ${w.usage.map(u => `<div class="used ${esc(u.kind)}">
+          <span class="uq">${esc(u.qty)}<small>${esc(u.unit)}</small></span>
+          <div class="ud">
+            <div class="un">${esc([u.metal_type, u.gauge, u.size].filter(Boolean).join(' · ') || u.description)}</div>
+            <div class="us">${esc(u.description)}${u.notes ? ' — ' + esc(u.notes) : ''}</div>
+            <div class="us muted">${esc(u.employee_name || '')} · ${esc((u.logged_at || '').slice(5, 16))}</div>
+          </div>
+        </div>`).join('')}
+      </div>` : '<div class="p-empty">Nothing logged yet.</div>'}
+      <button class="big-btn dark" id="wd-log" style="margin-top:12px">+ Log Materials Used</button>
+    </div>
+
     ${w.notes ? `<div class="pc"><h3>Shop Notes</h3><div class="build-desc">${esc(w.notes)}</div></div>` : ''}
 
     ${w.mine ? `<div class="pc">
@@ -429,6 +444,151 @@ async function pageWorkDetail(id) {
   };
   const startBtn = $('#wd-start'); if (startBtn) startBtn.onclick = () => update('in_progress');
   const doneBtn = $('#wd-done'); if (doneBtn) doneBtn.onclick = () => update('completed');
+  $('#wd-log').onclick = () => materialLogger({ work_order_id: w.id, label: w.wo_number, isFab: w.is_fab_shop, onDone: () => pageWorkDetail(id) });
+}
+
+// ---------------------------------------------------------------- logging what you used
+const METAL_TYPES = ['Galvanized', 'Galvalume', 'Paint Grip', 'Stainless 304', 'Stainless 316',
+  'Aluminum', 'Cold Rolled Steel', 'Hot Rolled Steel', 'Copper', 'Brass'];
+const GAUGES = ['26 ga', '24 ga', '22 ga', '20 ga', '18 ga', '16 ga', '14 ga', '12 ga', '11 ga', '10 ga',
+  '.032"', '.040"', '.050"', '.063"', '.080"', '.090"', '.125"', '3/16"', '1/4"'];
+const SIZES = ['4x8 sheet', '4x10 sheet', '5x10 sheet', '3x10 sheet', 'Coil', '20ft stick', '24ft stick', 'Remnant'];
+const UNITS = ['sheet', 'ea', 'lf', 'sqft', 'lb', 'stick', 'in'];
+
+/**
+ * The bench form. Metal lines carry type, gauge and size; solder is measured in
+ * inches because that is how it comes off the bar.
+ */
+function materialLogger({ work_order_id = null, job_id = null, label = '', isFab = true, onDone }) {
+  const lines = [];
+  const stockPromise = cachedApi('portal/materials');
+
+  const shell = document.createElement('div');
+  shell.className = 'sheet';
+  shell.innerHTML = `
+    <div class="sheet-inner">
+      <div class="sheet-head">
+        <h2>Materials used${label ? ` — ${esc(label)}` : ''}</h2>
+        <button class="sheet-x" id="ml-x">×</button>
+      </div>
+      <div class="sheet-body">
+        ${isFab ? `
+        <div class="fld"><label class="fldlabel">Add metal</label>
+          <div class="ml-row">
+            <select id="ml-type"><option value="">Metal…</option>${METAL_TYPES.map(t => `<option>${t}</option>`).join('')}</select>
+            <select id="ml-gauge"><option value="">Gauge…</option>${GAUGES.map(g => `<option>${g}</option>`).join('')}</select>
+          </div>
+          <div class="ml-row" style="margin-top:8px">
+            <select id="ml-size"><option value="">Size…</option>${SIZES.map(z => `<option>${z}</option>`).join('')}</select>
+            <input id="ml-qty" type="number" step="any" inputmode="decimal" placeholder="How many">
+          </div>
+          <button type="button" class="ml-add" id="ml-add-metal">+ Add this metal</button>
+        </div>` : ''}
+
+        <div class="fld"><label class="fldlabel">Or pull from the rack <span style="font-weight:500;text-transform:none;letter-spacing:0">(deducts from stock)</span></label>
+          <select id="ml-stock"><option value="">Pick from inventory…</option></select>
+          <div class="ml-row" style="margin-top:8px">
+            <input id="ml-stock-qty" type="number" step="any" inputmode="decimal" placeholder="How many">
+            <button type="button" class="ml-add" id="ml-add-stock" style="margin:0">+ Add</button>
+          </div>
+        </div>
+
+        <div class="fld solder-box">
+          <label class="fldlabel">Solder used</label>
+          <div class="ml-row">
+            <select id="ml-solder-type"><option value="">Which solder…</option></select>
+            <div class="inches"><input id="ml-solder" type="number" step="any" inputmode="decimal" placeholder="0"><span>inches</span></div>
+          </div>
+          <button type="button" class="ml-add" id="ml-add-solder">+ Add solder</button>
+        </div>
+
+        <div class="fld"><label class="fldlabel">Note <span style="font-weight:500;text-transform:none;letter-spacing:0">(optional)</span></label>
+          <input id="ml-note" placeholder="e.g. bucks 1-8, scrapped one sheet"></div>
+
+        <h3 style="margin:6px 0 8px;font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:var(--mist)">To be logged</h3>
+        <div id="ml-list"><div class="p-empty" style="padding:14px">Nothing added yet.</div></div>
+      </div>
+      <div class="sheet-foot">
+        <button class="big-btn go" id="ml-save">Log It</button>
+      </div>
+    </div>`;
+  document.body.appendChild(shell);
+
+  const close = () => shell.remove();
+  $('#ml-x', shell).onclick = close;
+  shell.onclick = e => { if (e.target === shell) close(); };
+
+  function renderLines() {
+    const box = $('#ml-list', shell);
+    box.innerHTML = lines.length ? lines.map((l, i) => `
+      <div class="used ${esc(l.kind)}">
+        <span class="uq">${esc(l.qty)}<small>${esc(l.unit)}</small></span>
+        <div class="ud"><div class="un">${esc([l.metal_type, l.gauge, l.size].filter(Boolean).join(' · ') || l.description)}</div>
+        <div class="us">${esc(l.description)}</div></div>
+        <button class="used-x" data-rm="${i}">×</button>
+      </div>`).join('') : '<div class="p-empty" style="padding:14px">Nothing added yet.</div>';
+    box.onclick = e => { if (e.target.dataset.rm !== undefined) { lines.splice(+e.target.dataset.rm, 1); renderLines(); } };
+  }
+
+  stockPromise.then(stock => {
+    const solder = stock.filter(m => /solder/i.test(m.category) || /solder/i.test(m.name));
+    const rest = stock.filter(m => !solder.includes(m));
+    $('#ml-stock', shell).innerHTML = '<option value="">Pick from inventory…</option>' +
+      rest.map(m => `<option value="${m.id}">${esc(m.name)} — ${m.qty_on_hand} ${esc(m.unit)} on hand</option>`).join('');
+    $('#ml-solder-type', shell).innerHTML = '<option value="">Which solder…</option>' +
+      solder.map(m => `<option value="${m.id}" data-unit="${esc(m.unit)}">${esc(m.name)}</option>`).join('');
+
+    $('#ml-add-stock', shell).onclick = () => {
+      const sel = $('#ml-stock', shell);
+      const m = rest.find(x => x.id === +sel.value);
+      const qty = Number($('#ml-stock-qty', shell).value);
+      if (!m) return msg('Pick an item first', 'err');
+      if (!(qty > 0)) return msg('How many did you use?', 'err');
+      lines.push({ kind: 'metal', material_id: m.id, description: m.name, qty, unit: m.unit, client_ref: newRef() });
+      sel.value = ''; $('#ml-stock-qty', shell).value = '';
+      renderLines();
+    };
+    $('#ml-add-solder', shell).onclick = () => {
+      const sel = $('#ml-solder-type', shell);
+      const m = solder.find(x => x.id === +sel.value);
+      const inches = Number($('#ml-solder', shell).value);
+      if (!(inches > 0)) return msg('How many inches of solder?', 'err');
+      lines.push({ kind: 'solder', material_id: m ? m.id : null, description: m ? m.name : 'Solder',
+        gauge: '', unit: m ? m.unit : 'in', qty: inches, client_ref: newRef() });
+      $('#ml-solder', shell).value = ''; sel.value = '';
+      renderLines();
+    };
+  });
+
+  const addMetal = $('#ml-add-metal', shell);
+  if (addMetal) addMetal.onclick = () => {
+    const type = $('#ml-type', shell).value, gauge = $('#ml-gauge', shell).value;
+    const size = $('#ml-size', shell).value, qty = Number($('#ml-qty', shell).value);
+    if (!type) return msg('Which metal did you use?', 'err');
+    if (!(qty > 0)) return msg('How many did you use?', 'err');
+    lines.push({ kind: 'metal', metal_type: type, gauge, size, qty,
+      unit: /sheet/i.test(size) ? 'sheet' : /stick/i.test(size) ? 'stick' : 'ea',
+      description: [type, gauge, size].filter(Boolean).join(' '), client_ref: newRef() });
+    $('#ml-qty', shell).value = '';
+    renderLines();
+  };
+
+  $('#ml-save', shell).onclick = async () => {
+    if (!lines.length) return msg('Add what you used first', 'err');
+    const note = $('#ml-note', shell).value.trim();
+    const payload = { work_order_id, job_id, lines: lines.map(l => ({ ...l, notes: note })) };
+    if (!navigator.onLine) {
+      enqueue('material_usage', payload);
+      close(); msg('Saved on this phone — will sync when you have signal', 'ok');
+      return onDone && onDone();
+    }
+    try {
+      const r = await api('portal/usage', 'POST', payload);
+      close(); msg(r.message, 'ok');
+      (r.warnings || []).forEach(w => msg(w, 'err'));
+      onDone && onDone();
+    } catch (e) { msg(e.message, 'err'); }
+  };
 }
 
 // ---------------------------------------------------------------- Job Card

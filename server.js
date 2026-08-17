@@ -402,6 +402,51 @@ async function portalApi(req, res, parts, body, user, url) {
     db.prepare('UPDATE time_entries SET clock_out = ? WHERE id = ?').run(safeStamp(at), open.id);
     return { ok: true, message: 'Clocked out — nice work' };
   }
+  /** Shared by the live logger and the offline queue drain. */
+  function saveUsage(payload) {
+    const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+    if (!lines.length) return { error: 'Nothing to log' };
+    const woId = Number(payload.work_order_id) || null;
+    const jobId = Number(payload.job_id) || null;
+    if (!woId && !jobId) return { error: 'No ticket or job given' };
+    const ins = db.prepare(`INSERT INTO material_usage
+      (company_id, work_order_id, job_id, employee_id, kind, material_id, metal_type, gauge, size,
+       description, qty, unit, unit_cost, notes, logged_at, client_ref)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    let n = 0, deduped = 0;
+    const warnings = [];
+    for (const line of lines.slice(0, 40)) {
+      const qty = Number(line.qty);
+      if (!(qty > 0)) continue;
+      if (line.client_ref && db.prepare('SELECT id FROM material_usage WHERE client_ref = ?').get(line.client_ref)) { deduped++; continue; }
+      const stock = line.material_id ? db.prepare('SELECT * FROM materials WHERE id = ?').get(line.material_id) : null;
+      if (stock && myCompany && stock.company_id && stock.company_id !== myCompany) continue;
+      const desc = String(line.description || stock?.name || '').slice(0, 180);
+      if (!desc) continue;
+      ins.run(myCompany || null, woId, jobId, empId,
+        ['metal', 'solder', 'consumable', 'other'].includes(line.kind) ? line.kind : 'metal',
+        stock ? stock.id : null, String(line.metal_type || '').slice(0, 60), String(line.gauge || '').slice(0, 30),
+        String(line.size || '').slice(0, 60), desc, qty,
+        String(line.unit || stock?.unit || 'ea').slice(0, 12), stock ? stock.unit_cost : 0,
+        String(line.notes || '').slice(0, 240), safeStamp(line.at || payload.at), line.client_ref || '');
+      if (stock) {
+        // Clamping at zero keeps stock sane, but a pull bigger than the rack held
+        // is usually a typo — say so rather than silently swallowing it.
+        if (qty > stock.qty_on_hand) {
+          warnings.push(`${desc}: logged ${qty} ${stock.unit} but only ${stock.qty_on_hand} were on hand — stock set to 0, check the count`);
+        }
+        db.prepare('UPDATE materials SET qty_on_hand = MAX(0, qty_on_hand - ?) WHERE id = ?').run(qty, stock.id);
+      }
+      n++;
+    }
+    if (!n) {
+      // a replayed offline batch is a success, not a failure
+      return deduped ? { ok: true, saved: 0, deduped, message: 'Already logged' } : { error: 'Nothing logged' };
+    }
+    return { ok: true, saved: n, deduped, warnings,
+      message: `Logged ${n} line${n === 1 ? '' : 's'}${warnings.length ? ` · ${warnings.length} stock warning${warnings.length === 1 ? '' : 's'}` : ''}` };
+  }
+
   function saveCard(b) {
     if (b.client_ref && db.prepare('SELECT id FROM job_cards WHERE client_ref = ?').get(b.client_ref)) return { ok: true, deduped: true };
     if (!b.work_performed) return { error: 'Describe the work performed' };
@@ -450,6 +495,7 @@ async function portalApi(req, res, parts, body, user, url) {
         if (op.type === 'clock_in') r = clockIn({ ...op.payload, at: op.at, client_ref: op.client_ref });
         else if (op.type === 'clock_out') r = clockOut({ at: op.at });
         else if (op.type === 'job_card') r = saveCard({ ...op.payload, client_ref: op.client_ref });
+        else if (op.type === 'material_usage') r = saveUsage(op.payload);
         else r = { error: 'Unknown operation' };
         results.push({ client_ref: op.client_ref, ...r });
       } catch (e) { results.push({ client_ref: op.client_ref, error: e.message }); }
@@ -498,6 +544,11 @@ async function portalApi(req, res, parts, body, user, url) {
         build_list: parseItems(wo.items).map(i => ({ desc: i.desc, qty: i.qty, unit: i.unit || '' })),
         plans: attachmentsFor('work_order', wo.id),
         job_plans: wo.job_id ? attachmentsFor('job', wo.job_id) : [],
+        is_fab_shop: (SC.byId(wo.company_id)?.kind === 'fabrication'),
+        usage: db.prepare(`SELECT u.id, u.kind, u.metal_type, u.gauge, u.size, u.description, u.qty, u.unit,
+            u.notes, u.logged_at, e.name AS employee_name
+          FROM material_usage u LEFT JOIN employees e ON e.id = u.employee_id
+          WHERE u.work_order_id = ? ORDER BY u.id DESC`).all(wo.id),
       });
     }
     // the whole shop queue, mine first — a bench hand can pick up any open ticket
@@ -554,6 +605,42 @@ async function portalApi(req, res, parts, body, user, url) {
       saved.push({ id: info.lastInsertRowid, ...meta });
     }
     return json(res, 200, { ok: true, saved, message: `${saved.length} photo${saved.length === 1 ? '' : 's'} attached` });
+  }
+
+  /**
+   * Material logged at the bench: what metal, what gauge, how much, and how
+   * many inches of solder. Linking a line to stock deducts it from inventory.
+   */
+  if (section === 'usage') {
+    if (req.method === 'GET') {
+      const woId = Number(url.searchParams.get('work_order_id')) || null;
+      const jobId = Number(url.searchParams.get('job_id')) || null;
+      if (!woId && !jobId) return json(res, 400, { error: 'Say which ticket or job' });
+      const rows = db.prepare(`SELECT u.*, e.name AS employee_name FROM material_usage u
+        LEFT JOIN employees e ON e.id = u.employee_id
+        WHERE ${woId ? 'u.work_order_id = ?' : 'u.job_id = ?'} ORDER BY u.id DESC`).all(woId || jobId);
+      // the bench sees quantities, not costs
+      return json(res, 200, rows.map(({ unit_cost, ...r }) => r));
+    }
+    if (req.method === 'POST') {
+      const woId = Number(body.work_order_id) || null;
+      const jobId = Number(body.job_id) || null;
+      if (woId) {
+        const wo = db.prepare('SELECT * FROM work_orders WHERE id = ?').get(woId);
+        if (!wo) return json(res, 404, { error: 'Work order not found' });
+        if (myCompany && wo.company_id && wo.company_id !== myCompany) return json(res, 403, { error: 'That work order belongs to the other company' });
+      }
+      if (jobId) {
+        const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId);
+        if (!job) return json(res, 404, { error: 'Job not found' });
+        if (myCompany && job.company_id && job.company_id !== myCompany) return json(res, 403, { error: 'That job belongs to the other company' });
+      }
+      const r = saveUsage(body);
+      if (r.error) return json(res, 400, r);
+      if (r.saved) auth.audit(user, 'material_logged', `${r.saved} line(s) on ${woId ? 'WO ' + woId : 'job ' + jobId}`);
+      const solder = (body.lines || []).filter(l => l.kind === 'solder').reduce((s2, l) => s2 + (Number(l.qty) || 0), 0);
+      return json(res, 200, { ...r, message: r.saved && solder ? `${r.message} and ${solder}" of solder` : r.message });
+    }
   }
 
   if (section === 'materials' && req.method === 'GET') {
@@ -1144,6 +1231,8 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
     job.subs = db.prepare(`SELECT js.*, s.name, s.trade, s.phone FROM job_subs js JOIN subcontractors s ON s.id = js.sub_id WHERE js.job_id = ?`).all(job.id);
     job.subs.forEach(s => { s.documents = db.prepare('SELECT * FROM sub_documents WHERE sub_id = ?').all(s.sub_id); });
     job.photos = attachmentsFor('job', job.id);
+    job.usage = db.prepare(`SELECT u.*, e.name AS employee_name FROM material_usage u
+      LEFT JOIN employees e ON e.id = u.employee_id WHERE u.job_id = ? ORDER BY u.id DESC`).all(job.id);
     return json(res, 200, job);
   }
   if (resource === 'jobs' && idOrAction && action === 'materials' && method === 'POST') {
@@ -1168,8 +1257,57 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       WHERE ${SC.where(scope, 'w').sql}
       ORDER BY CASE w.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END,
                CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.id DESC`).all(...SW.params);
-    rows.forEach(r => { r.financials = woFinancials(r); r.attachments = attachmentsFor('work_order', r.id); });
+    rows.forEach(r => {
+      r.financials = woFinancials(r);
+      r.attachments = attachmentsFor('work_order', r.id);
+      r.usage_lines = db.prepare('SELECT COUNT(*) n FROM material_usage WHERE work_order_id = ?').get(r.id).n;
+    });
     return json(res, 200, rows);
+  }
+
+  if (resource === 'workorders' && idOrAction && action === 'usage' && method === 'GET') {
+    return json(res, 200, db.prepare(`SELECT u.*, e.name AS employee_name FROM material_usage u
+      LEFT JOIN employees e ON e.id = u.employee_id WHERE u.work_order_id = ? ORDER BY u.id DESC`).all(idOrAction));
+  }
+
+  /** What the shop burned through: metal by type and gauge, plus solder by the inch. */
+  if (resource === 'consumption' && method === 'GET') {
+    const from = query.get('from') || addDays(today(), -30);
+    const to = query.get('to') || today();
+    const rows = db.prepare(`SELECT u.*, e.name AS employee_name, w.wo_number, j.job_number
+      FROM material_usage u
+      LEFT JOIN employees e ON e.id = u.employee_id
+      LEFT JOIN work_orders w ON w.id = u.work_order_id
+      LEFT JOIN jobs j ON j.id = u.job_id
+      WHERE date(u.logged_at) BETWEEN ? AND ? AND ${SC.where(scope, 'u').sql}
+      ORDER BY u.id DESC`).all(from, to, ...SW.params);
+
+    const group = (keyFn, filter) => {
+      const m = new Map();
+      for (const r of rows.filter(filter)) {
+        const k = keyFn(r);
+        if (!m.has(k)) m.set(k, { key: k, qty: 0, unit: r.unit, cost: 0, lines: 0 });
+        const g = m.get(k);
+        g.qty = round2(g.qty + r.qty); g.cost = round2(g.cost + r.qty * r.unit_cost); g.lines++;
+      }
+      return [...m.values()].sort((a, b) => b.cost - a.cost);
+    };
+    const isMetal = r => r.kind === 'metal';
+    const isSolder = r => r.kind === 'solder';
+    return json(res, 200, {
+      from, to, rows,
+      by_metal: group(r => [r.metal_type, r.gauge].filter(Boolean).join(' ') || r.description, isMetal),
+      by_size: group(r => r.size || '—', isMetal),
+      solder: {
+        total_inches: round2(rows.filter(isSolder).reduce((s, r) => s + r.qty, 0)),
+        total_cost: round2(rows.filter(isSolder).reduce((s, r) => s + r.qty * r.unit_cost, 0)),
+        by_type: group(r => r.description, isSolder),
+      },
+      totals: {
+        cost: round2(rows.reduce((s, r) => s + r.qty * r.unit_cost, 0)),
+        lines: rows.length,
+      },
+    });
   }
 
   // ---- job cards ----
