@@ -75,7 +75,11 @@ price = (fab_labor × rate + steel + liner_labor × rate + liner) × markup
 
 It pulls your steel price per square foot by gauge, liner by thickness, labor rate by class, markup, and the labor times the shop has recorded per size. Then write the size in plain English — *"6 register taps 20 girth x 12, 18ga, 1\" liner"* — and it prices, at gauges the grid never contained. When steel moves you change one number and every size re-prices.
 
-It gets its own screen — **Duct Calculator** in the sidebar. Pick a girth, length, gauge, liner and labor class and it prices the piece with the metal, the labor and the liner broken out, shows the same piece in every gauge side by side so you can see what a step up costs, and copies a quote line to the clipboard. Your rates are editable right there: change the 20ga steel price and all 170 sizes re-price on the spot.
+**Your price book ships with the app.** The All Spec estimating workbook has been decoded into data the app loads on first run — 49 materials, the duct formula with all 170 timed sizes and 5 gauges, and six fitting tables (saddles, uppers, round and square flex, plain and caulked round caps). There is no import step and no spreadsheet in the loop.
+
+**Quoting is a picker.** *Quote Duct & Fittings* in the sidebar: tap what you are quoting, pick the size, say how many, hit **Add to quote**. Lines stack up with a running total; name it, pick the customer, and **Create the quote** makes a real quote you can email. Duct is computed from the formula so any gauge and liner works; everything else comes straight off your own tables. Three taps produced a $479.02 quote in testing.
+
+The rates behind it stay editable — change the 20ga steel price and all 170 sizes re-price on the spot. Every duct line can be expanded to show exactly where its price came from — steel, labor, liner, markup.
 
 Verified against a working shop workbook: **all 170 priced cells reproduce to the cent.** (Seven further cells in that grid carry hand-typed numbers that the formula disagrees with — worth knowing about, and the sort of thing a grid hides.)
 

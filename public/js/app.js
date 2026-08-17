@@ -226,7 +226,7 @@ const TITLES = {
   users: ['Users & Access', 'Who can sign in, and what they can see'],
   settings: ['Settings', 'Company details, pricing defaults and email delivery'],
   inventory: ['Material Inventory', 'Stock on hand and reorder points'],
-  duct: ['Duct Calculator', 'Priced from your own steel, liner and labor rates'],
+  duct: ['Quote Duct & Fittings', 'Pick a size, add it, done — priced from your own book'],
   purchasing: ['Purchasing', 'Material orders and receiving'],
   archive: ['Archive & Profit Search', 'Every job and work order, what it sold for, what it cost'],
   insights: ['AI Insights', 'What the numbers are trying to tell you'],
@@ -2481,132 +2481,165 @@ const round1 = n => Math.round((Number(n) || 0) * 10) / 10;
  */
 PAGES.duct = async () => {
   const d = await api('duct');
-  if (!d.ok) {
-    view.innerHTML = `<div class="card"><div class="empty" style="padding:40px 20px;line-height:1.7">
-      <h3 style="font-size:16px;margin-bottom:8px">No duct formula saved yet</h3>
-      ${esc(d.message)}<br><br>
-      <a class="btn primary" href="#/inventory">Go to Inventory</a></div></div>`;
+  const fittings = d.fittings || [];
+  const m = d.ok ? d.model : null;
+  if (!m && !fittings.length) {
+    view.innerHTML = `<div class="card"><div class="empty" style="padding:40px 20px">No price book loaded for this company.</div></div>`;
     return;
   }
-  const m = d.model;
-  const girths = [...new Set(d.sizes.map(s => s.girth))].sort((a, b) => a - b);
-  const lengths = [...new Set(d.sizes.map(s => s.length))].sort((a, b) => a - b);
-  const gauges = Object.keys(m.steel_per_sqft).sort((a, b) => b - a);
-  const liners = ['0', ...Object.keys(m.liner_per_sqft).sort((a, b) => a - b)];
-  const classes = Object.keys(m.labor_rate);
-  const opt = (v, sel, suffix = '') => `<option value="${v}" ${String(v) === String(sel) ? 'selected' : ''}>${esc(v)}${esc(suffix)}</option>`;
+  const clients = await api('clients');
+
+  const girths = m ? [...new Set(d.sizes.map(s => s.girth))].sort((a, b) => a - b) : [];
+  const lengths = m ? [...new Set(d.sizes.map(s => s.length))].sort((a, b) => a - b) : [];
+  const gauges = m ? Object.keys(m.steel_per_sqft).sort((a, b) => b - a) : [];
+  const liners = m ? Object.keys(m.liner_per_sqft).sort((a, b) => a - b) : [];
+
+  // What you can put on a quote. Duct is computed; the rest are your own tables.
+  const KINDS = [
+    ...(m ? [{ id: 'duct', label: 'Duct / register tap', note: 'any gauge' }] : []),
+    ...fittings.map((f, i) => ({ id: 'f' + i, label: f.name, note: `${f.sizes.length} sizes`, fitting: f })),
+  ];
+
+  const cart = [];
+  let kind = KINDS[0].id;
 
   view.innerHTML = `
     <div class="grid grid-2">
       <div>
         <div class="card">
-          <h3>Price a piece</h3>
-          <form id="dc-form" class="form-grid">
-            <label class="fld">Girth (half the perimeter)<select name="girth">${girths.map(g => opt(g, 20, '"')).join('')}</select></label>
-            <label class="fld">Length<select name="length">${lengths.map(l => opt(l, 12, '"')).join('')}</select></label>
-            <label class="fld">Gauge<select name="gauge">${gauges.map(g => opt(g, m.default_gauge, 'ga')).join('')}</select></label>
-            <label class="fld">Liner<select name="liner">${liners.map(l => `<option value="${l}" ${l === '0' ? 'selected' : ''}>${l === '0' ? 'None' : esc(l) + '"'}</option>`).join('')}</select></label>
-            <label class="fld">Labor class<select name="labor_class">${classes.map(c => opt(c, m.default_labor_class, ` — $${m.labor_rate[c].toFixed(2)}/unit`)).join('')}</select></label>
-            <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
-          </form>
-          <div id="dc-out"></div>
-        </div>
-
-        <div class="card">
-          <h3>Compare every gauge <span class="hint">same size, same liner</span></h3>
-          <div id="dc-compare"><div class="empty">…</div></div>
+          <h3>What are you quoting?</h3>
+          <div class="kind-pick" id="kind-pick">
+            ${KINDS.map(k => `<button class="kind ${k.id === kind ? 'on' : ''}" data-kind="${k.id}">
+              <b>${esc(k.label)}</b><span>${esc(k.note)}</span></button>`).join('')}
+          </div>
+          <div id="pick-form"></div>
+          <div id="pick-price"></div>
         </div>
       </div>
 
       <div>
         <div class="card">
-          <h3>Your rates <span class="hint">change one, everything re-prices</span></h3>
-          <p class="muted" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">
-            Read out of your fabrication sheet. When steel moves, change it here —
-            all ${d.sizes.length} sizes follow.</p>
-          <form id="dc-rates" class="form-grid">
-            ${gauges.map(g => `<label class="fld">${esc(g)}ga steel $/sq ft<input data-rate="steel" data-key="${esc(g)}" type="number" step="any" value="${m.steel_per_sqft[g]}"></label>`).join('')}
-            ${Object.keys(m.liner_per_sqft).sort((a, b) => a - b).map(l => `<label class="fld">${esc(l)}" liner $/sq ft<input data-rate="liner" data-key="${esc(l)}" type="number" step="any" value="${Number(m.liner_per_sqft[l]).toFixed(4)}"></label>`).join('')}
-            ${classes.map(c => `<label class="fld">Labor class ${esc(c.toUpperCase())} $/unit<input data-rate="labor" data-key="${esc(c)}" type="number" step="any" value="${Number(m.labor_rate[c]).toFixed(4)}"></label>`).join('')}
-            <label class="fld">Markup %<input data-rate="markup" type="number" step="any" value="${Math.round((m.markup - 1) * 1000) / 10}"></label>
-          </form>
-          <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
-            <button class="btn primary sm" id="dc-save">Save rates</button>
-            <span class="muted" id="dc-saved" style="font-size:12px"></span>
-          </div>
-          <p class="muted" style="font-size:12px;margin-top:12px;line-height:1.6">
-            Labor times per size come from your grid and are not edited here —
-            re-import the sheet to change them. ${d.sizes.length} sizes on file,
-            girths ${girths[0]}"–${girths[girths.length - 1]}".</p>
+          <h3>This quote <span class="hint" id="cart-count">nothing yet</span></h3>
+          <div id="cart"></div>
+          <div id="cart-foot"></div>
         </div>
       </div>
     </div>`;
 
-  const spec = () => {
-    const f = formData($('#dc-form'));
-    return { girth: +f.girth, length: +f.length, gauge: f.gauge, liner: +f.liner, labor_class: f.labor_class, qty: Math.max(1, +f.qty || 1) };
-  };
+  const K = () => KINDS.find(k => k.id === kind);
 
-  async function recalc() {
-    const s = spec();
-    const r = await api('duct/price', 'POST', s);
-    const box = $('#dc-out');
-    if (!r.ok) { box.innerHTML = `<div class="est-warn medium"><h5>Cannot price that</h5><p>${esc(r.error)}</p></div>`; $('#dc-compare').innerHTML = ''; return; }
-    const b = r.breakdown;
-    box.innerHTML = `
-      <div class="dc-total">
-        <div><span>Each</span><b>${money(r.price)}</b></div>
-        ${s.qty > 1 ? `<div><span>${s.qty} pieces</span><b>${money(r.price * s.qty)}</b></div>` : ''}
-      </div>
-      ${r.used.exact_size ? '' : '<div class="est-warn medium"><h5>That exact size is not timed in your grid</h5><p>Labor was taken from the nearest size on file. Check it before it goes out.</p></div>'}
-      <table class="tbl dc-break"><tbody>
-        <tr><td>Steel — ${b.steel_sqft} sq ft of ${esc(r.used.gauge)}ga at ${money(r.used.steel_per_sqft)}/sq ft</td><td class="num">${money(b.steel)}</td></tr>
-        ${b.liner_material ? `<tr><td>Liner — ${b.liner_sqft} sq ft of ${r.used.liner}"</td><td class="num">${money(b.liner_material)}</td></tr>` : ''}
-        <tr><td>Fabrication labor — ${Math.round(r.used.fab_units * 100) / 100} units at ${money(r.used.labor_rate)}</td><td class="num">${money(b.fab_labor)}</td></tr>
-        ${b.liner_labor ? `<tr><td>Liner labor</td><td class="num">${money(b.liner_labor)}</td></tr>` : ''}
-        <tr class="sub"><td>Cost</td><td class="num">${money(b.subtotal)}</td></tr>
-        <tr><td>Markup ${b.markup_pct}%</td><td class="num">${money(r.price - b.subtotal)}</td></tr>
-      </tbody></table>
-      <button class="btn dark sm" id="dc-copy" style="margin-top:12px">Copy as a quote line</button>`;
-
-    $('#dc-copy').onclick = () => {
-      const line = `${s.qty} × Duct ${s.girth}" girth × ${s.length}" — ${s.gauge}ga${s.liner ? `, ${s.liner}" liner` : ''} @ ${money(r.price)} = ${money(r.price * s.qty)}`;
-      navigator.clipboard?.writeText(line);
-      toast('Copied — paste it into the quote description', 'ok');
-    };
-
-    // the same piece in every gauge, so the estimator can see what a step up costs
-    const rows = await Promise.all(gauges.map(g => api('duct/price', 'POST', { ...s, gauge: g })));
-    const base = rows.find(x => x.ok && String(x.used.gauge) === String(s.gauge));
-    $('#dc-compare').innerHTML = `<table class="tbl"><thead><tr><th>Gauge</th><th class="num">Each</th><th class="num">vs ${esc(s.gauge)}ga</th><th class="num">${s.qty} ${s.qty === 1 ? 'piece' : 'pieces'}</th></tr></thead><tbody>
-      ${rows.map((x, i) => !x.ok ? '' : `<tr class="${String(gauges[i]) === String(s.gauge) ? 'dc-here' : ''}">
-        <td class="strong">${esc(gauges[i])}ga</td>
-        <td class="num">${money(x.price)}</td>
-        <td class="num muted">${base && x.price !== base.price
-          ? (x.price > base.price ? '+' : '−') + money(Math.abs(x.price - base.price)) : '—'}</td>
-        <td class="num">${money(x.price * s.qty)}</td></tr>`).join('')}
-    </tbody></table>`;
+  function renderPicker() {
+    const k = K();
+    $$('.kind').forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
+    $('#pick-form').innerHTML = k.fitting
+      ? `<form id="pf" class="form-grid">
+           <label class="fld">Size<select name="size">${k.fitting.sizes.map(s =>
+             `<option value="${s.size}">${s.size}${esc(k.fitting.unit || '"')}</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`
+      : `<form id="pf" class="form-grid">
+           <label class="fld">Girth<select name="girth">${girths.map(g => `<option ${g === 20 ? 'selected' : ''}>${g}"</option>`).join('')}</select></label>
+           <label class="fld">Length<select name="length">${lengths.map(l => `<option ${l === 12 ? 'selected' : ''}>${l}"</option>`).join('')}</select></label>
+           <label class="fld">Gauge<select name="gauge">${gauges.map(g => `<option value="${g}" ${g === m.default_gauge ? 'selected' : ''}>${g}ga</option>`).join('')}</select></label>
+           <label class="fld">Liner<select name="liner"><option value="0">None</option>${liners.map(l => `<option value="${l}">${l}"</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`;
+    $('#pf').addEventListener('input', quote);
+    quote();
   }
 
-  $('#dc-form').addEventListener('input', recalc);
-  recalc();
+  function specOf() {
+    const f = formData($('#pf'));
+    const qty = Math.max(1, Number(f.qty) || 1);
+    const k = K();
+    if (k.fitting) return { qty, size: Number(f.size), fitting: k.fitting };
+    return { qty, girth: parseInt(f.girth), length: parseInt(f.length), gauge: f.gauge, liner: Number(f.liner) };
+  }
 
-  $('#dc-save').onclick = async () => {
-    const steel = {}, liner = {}, labor = {};
-    let markup = m.markup;
-    $$('[data-rate]').forEach(el => {
-      const v = Number(el.value);
-      if (el.dataset.rate === 'steel') steel[el.dataset.key] = v;
-      if (el.dataset.rate === 'liner') liner[el.dataset.key] = v;
-      if (el.dataset.rate === 'labor') labor[el.dataset.key] = v;
-      if (el.dataset.rate === 'markup') markup = 1 + v / 100;
-    });
-    await api('duct', 'PUT', { steel_per_sqft: steel, liner_per_sqft: liner, labor_rate: labor, markup });
-    Object.assign(m, { steel_per_sqft: steel, liner_per_sqft: liner, labor_rate: labor, markup });
-    $('#dc-saved').textContent = 'Saved ' + new Date().toLocaleTimeString();
-    toast('Rates saved — every size re-priced', 'ok');
-    recalc();
+  async function quote() {
+    const s = specOf(), k = K();
+    if (k.fitting) {
+      const hit = k.fitting.sizes.find(x => x.size === s.size);
+      return show({ ok: true, price: hit.price, label: `${k.fitting.name} — ${s.size}${k.fitting.unit || '"'}` }, s);
+    }
+    const r = await api('duct/price', 'POST', s);
+    show(r.ok ? { ...r, label: `Duct ${s.girth}" girth × ${s.length}" — ${s.gauge}ga${s.liner ? `, ${s.liner}" liner` : ''}` } : r, s);
+  }
+
+  function show(r, s) {
+    const box = $('#pick-price');
+    if (!r.ok) { box.innerHTML = `<div class="est-warn medium"><h5>Cannot price that</h5><p>${esc(r.error)}</p></div>`; return; }
+    box.innerHTML = `
+      <div class="pick-total">
+        <div><span>Each</span><b>${money(r.price)}</b></div>
+        <div><span>${s.qty} ${s.qty === 1 ? 'piece' : 'pieces'}</span><b>${money(r.price * s.qty)}</b></div>
+        <button class="btn primary" id="add-line">Add to quote</button>
+      </div>
+      ${r.used && !r.used.exact_size ? '<p class="muted" style="font-size:12px;margin-top:8px">That exact size is not timed in your book — priced off the nearest one.</p>' : ''}
+      ${r.breakdown ? `<details class="pick-why"><summary>Where the price comes from</summary>
+        <table class="tbl dc-break"><tbody>
+          <tr><td>Steel — ${r.breakdown.steel_sqft} sq ft of ${esc(r.used.gauge)}ga</td><td class="num">${money(r.breakdown.steel)}</td></tr>
+          ${r.breakdown.liner_material ? `<tr><td>Liner — ${r.breakdown.liner_sqft} sq ft</td><td class="num">${money(r.breakdown.liner_material)}</td></tr>` : ''}
+          <tr><td>Fabrication labor</td><td class="num">${money(r.breakdown.fab_labor)}</td></tr>
+          ${r.breakdown.liner_labor ? `<tr><td>Liner labor</td><td class="num">${money(r.breakdown.liner_labor)}</td></tr>` : ''}
+          <tr class="sub"><td>Cost</td><td class="num">${money(r.breakdown.subtotal)}</td></tr>
+          <tr><td>Markup ${r.breakdown.markup_pct}%</td><td class="num">${money(r.price - r.breakdown.subtotal)}</td></tr>
+        </tbody></table></details>` : ''}`;
+    $('#add-line').onclick = () => {
+      cart.push({ desc: r.label, qty: s.qty, unit: 'ea', unit_cost: r.breakdown ? r.breakdown.subtotal : 0, unit_price: r.price });
+      renderCart();
+      toast(`${s.qty} × ${r.label} added`, 'ok');
+    };
+  }
+
+  function renderCart() {
+    const total = cart.reduce((t, l) => t + l.qty * l.unit_price, 0);
+    $('#cart-count').textContent = cart.length ? `${cart.length} line${cart.length === 1 ? '' : 's'}` : 'nothing yet';
+    $('#cart').innerHTML = cart.length
+      ? `<table class="tbl"><tbody>${cart.map((l, i) => `<tr>
+          <td class="strong">${esc(l.desc)}</td>
+          <td class="num muted">${l.qty} × ${money(l.unit_price)}</td>
+          <td class="num strong">${money(l.qty * l.unit_price)}</td>
+          <td><button class="btn sm ghost" data-drop="${i}">✕</button></td></tr>`).join('')}</tbody></table>`
+      : '<div class="empty" style="padding:26px 10px">Pick a size on the left and hit <b>Add to quote</b>.</div>';
+    $('#cart-foot').innerHTML = cart.length ? `
+      <div class="pick-total" style="border-top:1px solid var(--line);margin-top:12px;padding-top:14px">
+        <div><span>Quote total</span><b>${money(total)}</b></div>
+      </div>
+      <form id="cart-form" class="form-grid" style="margin-top:12px">
+        <label class="fld full">Customer<select name="client_id">${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+        <label class="fld full">What is this for<input name="title" placeholder="e.g. Riverside kitchen exhaust" required></label>
+      </form>
+      <button class="btn primary" id="make-quote" style="width:100%;margin-top:10px">Create the quote</button>
+      <button class="linkish" id="clear-cart" style="margin-top:10px">Start over</button>` : '';
+
+    $('#cart').onclick = e => {
+      const i = e.target.dataset.drop;
+      if (i !== undefined) { cart.splice(+i, 1); renderCart(); }
+    };
+    const mk = $('#make-quote');
+    if (mk) mk.onclick = async () => {
+      const f = formData($('#cart-form'));
+      if (!f.title) return toast('Give it a name so you can find it later', 'err');
+      mk.disabled = true;
+      try {
+        const numbers = await api('numbers');
+        await api('quotes', 'POST', { quote_number: numbers.quote, client_id: f.client_id, title: f.title,
+          items: cart, labor_hours: 0, labor_rate: 0, markup_pct: 0, tax_pct: 0, status: 'draft' });
+        toast(`Quote ${numbers.quote} created`, 'ok');
+        location.hash = '#/quotes';
+      } catch (e) { toast(e.message, 'err'); mk.disabled = false; }
+    };
+    const cl = $('#clear-cart');
+    if (cl) cl.onclick = () => { cart.length = 0; renderCart(); };
+  }
+
+  $('#kind-pick').onclick = e => {
+    const b = e.target.closest('[data-kind]'); if (!b) return;
+    kind = b.dataset.kind; renderPicker();
   };
+  renderPicker();
+  renderCart();
 };
 
 PAGES.consumption = async () => {

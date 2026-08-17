@@ -1424,8 +1424,10 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
   if (resource === 'duct') {
     const m = ductModel(scope.activeId);
     if (method === 'GET') {
-      return json(res, 200, m ? { ok: true, model: m, sizes: duct.sizes(m), problems: duct.check(m) }
-        : { ok: false, message: 'No duct model saved yet. Import your fabrication sheet under Inventory → Import price book → Duct calculator.' });
+      const fittings = db.prepare(`SELECT params FROM fab_models WHERE company_id = ? AND kind = 'fitting'`).all(scope.activeId)
+        .map(r => { try { return JSON.parse(r.params); } catch { return null; } }).filter(Boolean);
+      return json(res, 200, m ? { ok: true, model: m, sizes: duct.sizes(m), problems: duct.check(m), fittings }
+        : { ok: false, fittings, message: 'No duct model saved yet. Import your fabrication sheet under Inventory → Import price book → Duct calculator.' });
     }
     if (method === 'POST' && idOrAction === 'price') {
       if (!m) return json(res, 400, { error: 'No duct model saved for this company yet.' });

@@ -674,3 +674,18 @@ a.plain:hover { text-decoration: underline; }
 .dc-break td { padding: 7px 6px; }
 .dc-break tr.sub td { border-top: 2px solid var(--line); font-weight: 750; }
 tr.dc-here td { background: #fffaf0; font-weight: 700; }
+.kind-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-bottom: 18px; }
+.kind {
+  text-align: left; padding: 12px 13px; border: 2px solid var(--line); border-radius: 11px;
+  background: #fff; cursor: pointer; font-family: inherit;
+}
+.kind:hover { border-color: #c9bcf5; }
+.kind.on { border-color: var(--amber); background: #fffdf7; }
+.kind b { display: block; font-size: 13.5px; line-height: 1.3; }
+.kind span { font-size: 11.5px; color: var(--mist); }
+.pick-total { display: flex; gap: 24px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+.pick-total span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--mist); font-weight: 700; }
+.pick-total b { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.pick-total .btn { margin-left: auto; }
+.pick-why { margin-top: 12px; }
+.pick-why summary { font-size: 12.5px; color: var(--blue); cursor: pointer; font-weight: 600; }

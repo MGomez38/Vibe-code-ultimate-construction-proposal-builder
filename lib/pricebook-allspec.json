@@ -1,0 +1,1816 @@
+{
+ "source": "All Spec Sheetmetal price book, 3/22/2024",
+ "materials": [
+  {
+   "name": "26ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 42.55,
+   "price": 85.1,
+   "priced_on": "2024-06-26",
+   "vendor": "General-Len"
+  },
+  {
+   "name": "24ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 52.25,
+   "price": 104.5,
+   "priced_on": "2024-06-26",
+   "vendor": "General-Len"
+  },
+  {
+   "name": "24ga  48\" x 120\" BOND",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 57,
+   "price": 114,
+   "priced_on": "2024-06-26",
+   "vendor": "Merit USA"
+  },
+  {
+   "name": "22ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 63,
+   "price": 126,
+   "priced_on": "2024-06-26",
+   "vendor": "General-Len"
+  },
+  {
+   "name": "20ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 75,
+   "price": 150,
+   "priced_on": "2024-06-26",
+   "vendor": "General-Len"
+  },
+  {
+   "name": "18ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 97,
+   "price": 194,
+   "priced_on": "2024-06-26",
+   "vendor": "General-Len"
+  },
+  {
+   "name": "16ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 118,
+   "price": 236,
+   "priced_on": "2024-06-26",
+   "vendor": "General-Len"
+  },
+  {
+   "name": "14ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 188,
+   "price": 376,
+   "priced_on": "2024-06-26",
+   "vendor": "Merit USA"
+  },
+  {
+   "name": "12ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 222,
+   "price": 444,
+   "priced_on": "2024-06-26",
+   "vendor": "Merit USA"
+  },
+  {
+   "name": "10ga  48\" x 120\" GALV",
+   "category": "Galvanized and Bond",
+   "unit": "sheet",
+   "cost": 290,
+   "price": 580,
+   "priced_on": "2024-06-26",
+   "vendor": "PDM"
+  },
+  {
+   "name": "24ga  48\" x 120\" SS304",
+   "category": "Stainless Steel",
+   "unit": "sheet",
+   "cost": 145,
+   "price": 290,
+   "priced_on": "2011-12-07",
+   "vendor": ""
+  },
+  {
+   "name": "22ga  48\" x 120\" SS304",
+   "category": "Stainless Steel",
+   "unit": "sheet",
+   "cost": 175,
+   "price": 350,
+   "priced_on": "2011-12-07",
+   "vendor": "Coast"
+  },
+  {
+   "name": "20ga  48\" x 120\" SS304",
+   "category": "Stainless Steel",
+   "unit": "sheet",
+   "cost": 203,
+   "price": 406,
+   "priced_on": "2011-12-07",
+   "vendor": ""
+  },
+  {
+   "name": "20ga  48\" x 120\" #8 SS304",
+   "category": "Stainless Steel",
+   "unit": "sheet",
+   "cost": 222.65,
+   "price": 445.3,
+   "priced_on": "2015-06-03",
+   "vendor": "Coast"
+  },
+  {
+   "name": "18ga  48\" x 120\" SS304",
+   "category": "Stainless Steel",
+   "unit": "sheet",
+   "cost": 257,
+   "price": 514,
+   "priced_on": "2011-12-07",
+   "vendor": ""
+  },
+  {
+   "name": "16ga  48\" x 120\" SS304",
+   "category": "Stainless Steel",
+   "unit": "sheet",
+   "cost": 320,
+   "price": 640,
+   "priced_on": "2011-12-07",
+   "vendor": ""
+  },
+  {
+   "name": "20ga  48\" x 120\" #8304",
+   "category": "Stainless Steel",
+   "unit": "sheet",
+   "cost": 177,
+   "price": 354,
+   "priced_on": "2015-01-12",
+   "vendor": "Reliance"
+  },
+  {
+   "name": "Mill finish .032",
+   "category": "5052 Aluminum",
+   "unit": "sheet",
+   "cost": 37.73,
+   "price": 75.46,
+   "priced_on": "2013-04-20",
+   "vendor": ""
+  },
+  {
+   "name": "Mill finish .040",
+   "category": "5052 Aluminum",
+   "unit": "sheet",
+   "cost": 47.08,
+   "price": 94.16,
+   "priced_on": "2013-04-21",
+   "vendor": ""
+  },
+  {
+   "name": "Mill finish .063",
+   "category": "5052 Aluminum",
+   "unit": "sheet",
+   "cost": 73.84,
+   "price": 147.68,
+   "priced_on": "2013-04-22",
+   "vendor": ""
+  },
+  {
+   "name": "1/8 Treadbrite",
+   "category": "5052 Aluminum",
+   "unit": "sheet",
+   "cost": 242.55,
+   "price": 485.1,
+   "priced_on": "2013-06-13",
+   "vendor": ""
+  },
+  {
+   "name": "Clear .040",
+   "category": "Anodized Aluminum",
+   "unit": "sheet",
+   "cost": 78.25,
+   "price": 156.5,
+   "priced_on": "2013-04-20",
+   "vendor": ""
+  },
+  {
+   "name": "Clear .050  48x96",
+   "category": "Anodized Aluminum",
+   "unit": "sheet",
+   "cost": 84.53,
+   "price": 169.06,
+   "priced_on": "2015-02-02",
+   "vendor": ""
+  },
+  {
+   "name": "Clear .063",
+   "category": "Anodized Aluminum",
+   "unit": "sheet",
+   "cost": 122.64,
+   "price": 245.28,
+   "priced_on": "2013-04-21",
+   "vendor": ""
+  },
+  {
+   "name": "Clear .090",
+   "category": "Anodized Aluminum",
+   "unit": "sheet",
+   "cost": 175.5,
+   "price": 351,
+   "priced_on": "2015-02-02",
+   "vendor": ""
+  },
+  {
+   "name": "Bronze .040",
+   "category": "Anodized Aluminum",
+   "unit": "sheet",
+   "cost": 92.66,
+   "price": 185.32,
+   "priced_on": "2015-08-12",
+   "vendor": ""
+  },
+  {
+   "name": "Bronze .050",
+   "category": "Anodized Aluminum",
+   "unit": "sheet",
+   "cost": 117.57,
+   "price": 235.14,
+   "priced_on": "2015-06-23",
+   "vendor": "Coast"
+  },
+  {
+   "name": "Bronze.063",
+   "category": "Anodized Aluminum",
+   "unit": "sheet",
+   "cost": 143.35,
+   "price": 286.7,
+   "priced_on": "2015-08-12",
+   "vendor": ""
+  },
+  {
+   "name": "1 1/2 x 1 1/2\" x 1/8\" Angle Iron x 20'",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 7.89,
+   "price": 15.78,
+   "priced_on": "2013-01-04",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1 x 1 x 1/8\" Angle Iron x 20'",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 9.39,
+   "price": 18.78,
+   "priced_on": "2012-04-11",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1x1x.090 sq. tubing",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 15,
+   "price": 30,
+   "priced_on": "2014-09-17",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1/8 x 1 1/2\" Flat Bar 20'",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 10.09,
+   "price": 20.18,
+   "priced_on": "2012-04-11",
+   "vendor": "PDM"
+  },
+  {
+   "name": "C 3 x 4.1 Channel 20'",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 49.28,
+   "price": 98.56,
+   "priced_on": "2012-04-11",
+   "vendor": "PDM"
+  },
+  {
+   "name": "2 x 2\" 1/8\" Square Tube",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 41,
+   "price": 82,
+   "priced_on": "2012-06-08",
+   "vendor": "PDM"
+  },
+  {
+   "name": "EXP #13 FLAT 48 x 96\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 46.81,
+   "price": 93.62,
+   "priced_on": "2012-07-27",
+   "vendor": "PDM"
+  },
+  {
+   "name": "EXP #13 FLAT 48 x 120\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 58.5,
+   "price": 117,
+   "priced_on": "2012-12-06",
+   "vendor": "PDM"
+  },
+  {
+   "name": "3/16 H.R. Plate  48\" x 120\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 165,
+   "price": 330,
+   "priced_on": "2014-12-02",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1/8\" H.R Plate 48 x 96\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 91.85,
+   "price": 183.7,
+   "priced_on": "2011-09-16",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1/4\" H.R. Plate 48 x 96\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 187.86,
+   "price": 375.72,
+   "priced_on": "2011-09-16",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1/4\" H.R. Plate 48 x 120\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 377.61,
+   "price": 755.22,
+   "priced_on": "2011-09-16",
+   "vendor": "PDM"
+  },
+  {
+   "name": "18ga CR 48 x 120\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 52.31,
+   "price": 104.62,
+   "priced_on": "2012-04-11",
+   "vendor": "PDM"
+  },
+  {
+   "name": "20ga CR 48 x 120\"",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 39.03,
+   "price": 78.06,
+   "priced_on": "2012-04-11",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1 1/4\" Sch 40",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 3.04,
+   "price": 6.08,
+   "priced_on": "2021-01-20",
+   "vendor": "PDM"
+  },
+  {
+   "name": "1 1/4\" Sch 40 GALV",
+   "category": "Iron Material",
+   "unit": "sheet",
+   "cost": 3.6,
+   "price": 7.2,
+   "priced_on": "2025-02-03",
+   "vendor": "PDM"
+  },
+  {
+   "name": "2.5 lb  12\" x 25'",
+   "category": "Lead",
+   "unit": "sheet",
+   "cost": 80.62,
+   "price": 161.24,
+   "priced_on": "",
+   "vendor": "Genral Ins."
+  },
+  {
+   "name": "2# 48\" x 20'",
+   "category": "Lead",
+   "unit": "sheet",
+   "cost": 440,
+   "price": 880,
+   "priced_on": "",
+   "vendor": "Genral Ins."
+  },
+  {
+   "name": "4# 48\" x 20'",
+   "category": "Lead",
+   "unit": "sheet",
+   "cost": 1000,
+   "price": 2000,
+   "priced_on": "",
+   "vendor": "Genral Ins."
+  },
+  {
+   "name": "16oz  48\" sheet",
+   "category": "Copper",
+   "unit": "sheet",
+   "cost": 243,
+   "price": 486,
+   "priced_on": "",
+   "vendor": "Air Cold"
+  },
+  {
+   "name": "20oz  48\" sheet",
+   "category": "Copper",
+   "unit": "sheet",
+   "cost": 273.5,
+   "price": 547,
+   "priced_on": "",
+   "vendor": "Air Cold"
+  }
+ ],
+ "duct": {
+  "steel_per_sqft": {
+   "18": 4.85,
+   "20": 3.75,
+   "22": 3.15,
+   "24": 2.6125,
+   "26": 2.1275
+  },
+  "liner_per_sqft": {
+   "1": 2.6166666666666667,
+   "0.5": 2.1333333333333333,
+   "1.5": 4.916666666666667
+  },
+  "labor_rate": {
+   "a": 2.5,
+   "b": 2.7766666666666664,
+   "c": 3.0533333333333332,
+   "d": 3.33
+  },
+  "labor": {
+   "12x2": {
+    "fab": 9,
+    "liner": 5
+   },
+   "16x2": {
+    "fab": 9.666666666666668,
+    "liner": 5.555555555555555
+   },
+   "20x2": {
+    "fab": 10.333333333333334,
+    "liner": 6.111111111111112
+   },
+   "24x2": {
+    "fab": 11,
+    "liner": 6.666666666666667
+   },
+   "28x2": {
+    "fab": 11.666666666666668,
+    "liner": 7.222222222222222
+   },
+   "32x2": {
+    "fab": 12.333333333333334,
+    "liner": 7.777777777777779
+   },
+   "36x2": {
+    "fab": 13,
+    "liner": 8.333333333333334
+   },
+   "40x2": {
+    "fab": 13.666666666666668,
+    "liner": 8.88888888888889
+   },
+   "48x2": {
+    "fab": 14.333333333333334,
+    "liner": 9.444444444444445
+   },
+   "62x2": {
+    "fab": 15,
+    "liner": 10
+   },
+   "12x8": {
+    "fab": 10.517006802721088,
+    "liner": 5.999999999999999
+   },
+   "16x8": {
+    "fab": 11.348450491307633,
+    "liner": 6.61111111111111
+   },
+   "20x8": {
+    "fab": 12.179894179894179,
+    "liner": 7.222222222222221
+   },
+   "24x8": {
+    "fab": 13.011337868480725,
+    "liner": 7.833333333333332
+   },
+   "28x8": {
+    "fab": 13.84278155706727,
+    "liner": 8.444444444444443
+   },
+   "32x8": {
+    "fab": 14.674225245653815,
+    "liner": 9.055555555555555
+   },
+   "36x8": {
+    "fab": 15.505668934240362,
+    "liner": 9.666666666666666
+   },
+   "40x8": {
+    "fab": 16.337112622826908,
+    "liner": 10.277777777777779
+   },
+   "48x8": {
+    "fab": 17.168556311413454,
+    "liner": 10.88888888888889
+   },
+   "62x8": {
+    "fab": 18,
+    "liner": 11.5
+   },
+   "12x12": {
+    "fab": 10.517006802721086,
+    "liner": 8
+   },
+   "16x12": {
+    "fab": 11.70238095238095,
+    "liner": 8.5
+   },
+   "20x12": {
+    "fab": 12.887755102040813,
+    "liner": 9
+   },
+   "24x12": {
+    "fab": 14.073129251700678,
+    "liner": 9.5
+   },
+   "28x12": {
+    "fab": 15.258503401360542,
+    "liner": 10
+   },
+   "32x12": {
+    "fab": 16.443877551020407,
+    "liner": 10.5
+   },
+   "36x12": {
+    "fab": 17.62925170068027,
+    "liner": 11
+   },
+   "40x12": {
+    "fab": 18.814625850340136,
+    "liner": 11.5
+   },
+   "48x12": {
+    "fab": 20,
+    "liner": 12
+   },
+   "62x12": {
+    "fab": 22,
+    "liner": 14
+   },
+   "12x16": {
+    "fab": 10.517006802721086,
+    "liner": 8.5
+   },
+   "16x16": {
+    "fab": 11.70238095238095,
+    "liner": 9
+   },
+   "20x16": {
+    "fab": 12.887755102040813,
+    "liner": 9.5
+   },
+   "24x16": {
+    "fab": 14.073129251700678,
+    "liner": 10
+   },
+   "28x16": {
+    "fab": 15.258503401360542,
+    "liner": 10.5
+   },
+   "32x16": {
+    "fab": 16.443877551020407,
+    "liner": 11
+   },
+   "36x16": {
+    "fab": 17.62925170068027,
+    "liner": 11.5
+   },
+   "40x16": {
+    "fab": 18.814625850340136,
+    "liner": 12
+   },
+   "48x16": {
+    "fab": 20,
+    "liner": 12.5
+   },
+   "62x16": {
+    "fab": 22,
+    "liner": 14.5
+   },
+   "12x20": {
+    "fab": 11.568707482993196,
+    "liner": 8.5
+   },
+   "16x20": {
+    "fab": 12.872619047619047,
+    "liner": 9
+   },
+   "20x20": {
+    "fab": 14.176530612244896,
+    "liner": 9.5
+   },
+   "24x20": {
+    "fab": 15.480442176870747,
+    "liner": 10
+   },
+   "28x20": {
+    "fab": 16.7843537414966,
+    "liner": 10.5
+   },
+   "32x20": {
+    "fab": 18.088265306122448,
+    "liner": 11
+   },
+   "36x20": {
+    "fab": 19.3921768707483,
+    "liner": 11.5
+   },
+   "40x20": {
+    "fab": 20.69608843537415,
+    "liner": 12
+   },
+   "48x20": {
+    "fab": 22,
+    "liner": 12.5
+   },
+   "62x20": {
+    "fab": 24.200000000000003,
+    "liner": 12.5
+   },
+   "12x24": {
+    "fab": 11.568707482993196,
+    "liner": 8.5
+   },
+   "16x24": {
+    "fab": 12.872619047619047,
+    "liner": 9
+   },
+   "20x24": {
+    "fab": 14.176530612244896,
+    "liner": 9.5
+   },
+   "24x24": {
+    "fab": 15.480442176870747,
+    "liner": 10
+   },
+   "28x24": {
+    "fab": 16.7843537414966,
+    "liner": 10.5
+   },
+   "32x24": {
+    "fab": 18.088265306122448,
+    "liner": 11
+   },
+   "36x24": {
+    "fab": 19.3921768707483,
+    "liner": 11.5
+   },
+   "40x24": {
+    "fab": 20.69608843537415,
+    "liner": 12
+   },
+   "48x24": {
+    "fab": 22,
+    "liner": 12.5
+   },
+   "62x24": {
+    "fab": 24.200000000000003,
+    "liner": 12.5
+   },
+   "12x28": {
+    "fab": 12.725578231292516,
+    "liner": 9
+   },
+   "16x28": {
+    "fab": 14.159880952380952,
+    "liner": 9.625
+   },
+   "20x28": {
+    "fab": 15.594183673469388,
+    "liner": 10.25
+   },
+   "24x28": {
+    "fab": 17.028486394557824,
+    "liner": 10.875
+   },
+   "28x28": {
+    "fab": 18.46278911564626,
+    "liner": 11.5
+   },
+   "32x28": {
+    "fab": 19.897091836734695,
+    "liner": 12.125
+   },
+   "36x28": {
+    "fab": 21.33139455782313,
+    "liner": 12.75
+   },
+   "40x28": {
+    "fab": 22.765697278911567,
+    "liner": 13.375
+   },
+   "48x28": {
+    "fab": 24.200000000000003,
+    "liner": 14
+   },
+   "62x28": {
+    "fab": 26.620000000000005,
+    "liner": 14
+   },
+   "12x32": {
+    "fab": 12.725578231292516,
+    "liner": 9
+   },
+   "16x32": {
+    "fab": 14.159880952380952,
+    "liner": 9.625
+   },
+   "20x32": {
+    "fab": 15.594183673469388,
+    "liner": 10.25
+   },
+   "24x32": {
+    "fab": 17.028486394557824,
+    "liner": 10.875
+   },
+   "28x32": {
+    "fab": 18.46278911564626,
+    "liner": 11.5
+   },
+   "32x32": {
+    "fab": 19.897091836734695,
+    "liner": 12.125
+   },
+   "36x32": {
+    "fab": 21.33139455782313,
+    "liner": 12.75
+   },
+   "40x32": {
+    "fab": 22.765697278911567,
+    "liner": 13.375
+   },
+   "48x32": {
+    "fab": 24.200000000000003,
+    "liner": 14
+   },
+   "62x32": {
+    "fab": 26.620000000000005,
+    "liner": 14
+   },
+   "12x36": {
+    "fab": 13.361857142857144,
+    "liner": 9
+   },
+   "16x36": {
+    "fab": 14.867875,
+    "liner": 9.625
+   },
+   "20x36": {
+    "fab": 16.37389285714286,
+    "liner": 10.25
+   },
+   "24x36": {
+    "fab": 17.879910714285717,
+    "liner": 10.875
+   },
+   "28x36": {
+    "fab": 19.385928571428572,
+    "liner": 11.5
+   },
+   "32x36": {
+    "fab": 20.89194642857143,
+    "liner": 12.125
+   },
+   "36x36": {
+    "fab": 22.397964285714288,
+    "liner": 12.75
+   },
+   "40x36": {
+    "fab": 23.903982142857146,
+    "liner": 13.375
+   },
+   "48x36": {
+    "fab": 25.410000000000004,
+    "liner": 14
+   },
+   "62x36": {
+    "fab": 27.951000000000008,
+    "liner": 14
+   },
+   "12x40": {
+    "fab": 14.029950000000001,
+    "liner": 9.5
+   },
+   "16x40": {
+    "fab": 15.61126875,
+    "liner": 10.125
+   },
+   "20x40": {
+    "fab": 17.192587500000002,
+    "liner": 10.75
+   },
+   "24x40": {
+    "fab": 18.773906250000003,
+    "liner": 11.375
+   },
+   "28x40": {
+    "fab": 20.355225,
+    "liner": 12
+   },
+   "32x40": {
+    "fab": 21.936543750000002,
+    "liner": 12.625
+   },
+   "36x40": {
+    "fab": 23.517862500000003,
+    "liner": 13.25
+   },
+   "40x40": {
+    "fab": 25.099181250000004,
+    "liner": 13.875
+   },
+   "48x40": {
+    "fab": 26.680500000000006,
+    "liner": 14.5
+   },
+   "62x40": {
+    "fab": 29.34855000000001,
+    "liner": 14.5
+   },
+   "12x44": {
+    "fab": 14.029950000000001,
+    "liner": 9.5
+   },
+   "16x44": {
+    "fab": 15.61126875,
+    "liner": 10.125
+   },
+   "20x44": {
+    "fab": 17.192587500000002,
+    "liner": 10.75
+   },
+   "24x44": {
+    "fab": 18.773906250000003,
+    "liner": 11.375
+   },
+   "28x44": {
+    "fab": 20.355225,
+    "liner": 12
+   },
+   "32x44": {
+    "fab": 21.936543750000002,
+    "liner": 12.625
+   },
+   "36x44": {
+    "fab": 23.517862500000003,
+    "liner": 13.25
+   },
+   "40x44": {
+    "fab": 25.099181250000004,
+    "liner": 13.875
+   },
+   "48x44": {
+    "fab": 26.680500000000006,
+    "liner": 14.5
+   },
+   "62x44": {
+    "fab": 29.34855000000001,
+    "liner": 14.5
+   },
+   "12x48": {
+    "fab": 14.029950000000001,
+    "liner": 10
+   },
+   "16x48": {
+    "fab": 15.61126875,
+    "liner": 10.75
+   },
+   "20x48": {
+    "fab": 17.192587500000002,
+    "liner": 11.5
+   },
+   "24x48": {
+    "fab": 18.773906250000003,
+    "liner": 12.25
+   },
+   "28x48": {
+    "fab": 20.355225,
+    "liner": 13
+   },
+   "32x48": {
+    "fab": 21.936543750000002,
+    "liner": 13.75
+   },
+   "36x48": {
+    "fab": 23.517862500000003,
+    "liner": 14.5
+   },
+   "40x48": {
+    "fab": 25.099181250000004,
+    "liner": 15.25
+   },
+   "48x48": {
+    "fab": 26.680500000000006,
+    "liner": 16
+   },
+   "62x48": {
+    "fab": 29.34855000000001,
+    "liner": 16
+   },
+   "12x60": {
+    "fab": 16.83594,
+    "liner": 13
+   },
+   "16x60": {
+    "fab": 18.7335225,
+    "liner": 13.5
+   },
+   "20x60": {
+    "fab": 20.631105,
+    "liner": 14
+   },
+   "24x60": {
+    "fab": 22.528687500000004,
+    "liner": 14.5
+   },
+   "28x60": {
+    "fab": 24.42627,
+    "liner": 15
+   },
+   "32x60": {
+    "fab": 26.3238525,
+    "liner": 15.5
+   },
+   "36x60": {
+    "fab": 28.221435000000003,
+    "liner": 16
+   },
+   "40x60": {
+    "fab": 30.119017500000005,
+    "liner": 16.5
+   },
+   "48x60": {
+    "fab": 32.016600000000004,
+    "liner": 17
+   },
+   "62x60": {
+    "fab": 35.21826000000001,
+    "liner": 17
+   },
+   "12x72": {
+    "fab": 18.519534000000004,
+    "liner": 15
+   },
+   "16x72": {
+    "fab": 20.60687475,
+    "liner": 15.5
+   },
+   "20x72": {
+    "fab": 22.694215500000002,
+    "liner": 16
+   },
+   "24x72": {
+    "fab": 24.781556250000005,
+    "liner": 16.5
+   },
+   "28x72": {
+    "fab": 26.868897,
+    "liner": 17
+   },
+   "32x72": {
+    "fab": 28.956237750000003,
+    "liner": 17.5
+   },
+   "36x72": {
+    "fab": 31.043578500000006,
+    "liner": 18
+   },
+   "40x72": {
+    "fab": 33.130919250000005,
+    "liner": 18.5
+   },
+   "48x72": {
+    "fab": 35.21826000000001,
+    "liner": 19
+   },
+   "62x72": {
+    "fab": 38.74008600000001,
+    "liner": 19
+   },
+   "12x84": {
+    "fab": 18.519534000000004,
+    "liner": 16
+   },
+   "16x84": {
+    "fab": 20.60687475,
+    "liner": 16.5
+   },
+   "20x84": {
+    "fab": 22.694215500000002,
+    "liner": 17
+   },
+   "24x84": {
+    "fab": 24.781556250000005,
+    "liner": 17.5
+   },
+   "28x84": {
+    "fab": 26.868897,
+    "liner": 18
+   },
+   "32x84": {
+    "fab": 28.956237750000003,
+    "liner": 18.5
+   },
+   "36x84": {
+    "fab": 31.043578500000006,
+    "liner": 19
+   },
+   "40x84": {
+    "fab": 33.130919250000005,
+    "liner": 19.5
+   },
+   "48x84": {
+    "fab": 35.21826000000001,
+    "liner": 20
+   },
+   "62x84": {
+    "fab": 38.74008600000001,
+    "liner": 20
+   },
+   "12x96": {
+    "fab": 19.445510700000003,
+    "liner": 18
+   },
+   "16x96": {
+    "fab": 21.6372184875,
+    "liner": 18.5
+   },
+   "20x96": {
+    "fab": 23.828926275000004,
+    "liner": 19
+   },
+   "24x96": {
+    "fab": 26.020634062500005,
+    "liner": 19.5
+   },
+   "28x96": {
+    "fab": 28.21234185,
+    "liner": 20
+   },
+   "32x96": {
+    "fab": 30.404049637500005,
+    "liner": 20.5
+   },
+   "36x96": {
+    "fab": 32.59575742500001,
+    "liner": 21
+   },
+   "40x96": {
+    "fab": 34.78746521250001,
+    "liner": 21.5
+   },
+   "48x96": {
+    "fab": 36.97917300000001,
+    "liner": 22
+   },
+   "62x96": {
+    "fab": 40.67709030000002,
+    "liner": 22
+   },
+   "12x120": {
+    "fab": 19.445510700000003,
+    "liner": 18
+   },
+   "16x120": {
+    "fab": 21.6372184875,
+    "liner": 18.5
+   },
+   "20x120": {
+    "fab": 23.828926275000004,
+    "liner": 19
+   },
+   "24x120": {
+    "fab": 26.020634062500005,
+    "liner": 19.5
+   },
+   "28x120": {
+    "fab": 28.21234185,
+    "liner": 20
+   },
+   "32x120": {
+    "fab": 30.404049637500005,
+    "liner": 20.5
+   },
+   "36x120": {
+    "fab": 32.59575742500001,
+    "liner": 21
+   },
+   "40x120": {
+    "fab": 34.78746521250001,
+    "liner": 21.5
+   },
+   "48x120": {
+    "fab": 36.97917300000001,
+    "liner": 22
+   },
+   "62x120": {
+    "fab": 40.67709030000002,
+    "liner": 22
+   }
+  },
+  "markup": 1.15,
+  "default_gauge": "24",
+  "default_labor_class": "a",
+  "lengths": [
+   2,
+   8,
+   12,
+   16,
+   20,
+   24,
+   28,
+   32,
+   36,
+   40,
+   44,
+   48,
+   60,
+   72,
+   84,
+   96,
+   120
+  ],
+  "girths": [
+   12,
+   16,
+   20,
+   24,
+   28,
+   32,
+   36,
+   40,
+   48,
+   62
+  ]
+ },
+ "fittings": [
+  {
+   "name": "Saddle",
+   "unit": "\"",
+   "sizes": [
+    {
+     "size": 12,
+     "price": 103.65
+    },
+    {
+     "size": 14,
+     "price": 107.24
+    },
+    {
+     "size": 16,
+     "price": 110.84
+    },
+    {
+     "size": 18,
+     "price": 114.43
+    },
+    {
+     "size": 20,
+     "price": 118.03
+    },
+    {
+     "size": 22,
+     "price": 121.62
+    },
+    {
+     "size": 24,
+     "price": 125.21
+    },
+    {
+     "size": 26,
+     "price": 128.81
+    },
+    {
+     "size": 28,
+     "price": 132.4
+    },
+    {
+     "size": 30,
+     "price": 136
+    },
+    {
+     "size": 32,
+     "price": 139.59
+    },
+    {
+     "size": 34,
+     "price": 143.19
+    },
+    {
+     "size": 36,
+     "price": 146.78
+    },
+    {
+     "size": 38,
+     "price": 150.37
+    },
+    {
+     "size": 40,
+     "price": 153.97
+    },
+    {
+     "size": 42,
+     "price": 157.56
+    },
+    {
+     "size": 44,
+     "price": 161.16
+    },
+    {
+     "size": 46,
+     "price": 164.75
+    },
+    {
+     "size": 48,
+     "price": 168.34
+    },
+    {
+     "size": 50,
+     "price": 171.94
+    },
+    {
+     "size": 60,
+     "price": 180.41
+    }
+   ]
+  },
+  {
+   "name": "Saddle upper",
+   "unit": "\"",
+   "sizes": [
+    {
+     "size": 12,
+     "price": 61.26
+    },
+    {
+     "size": 14,
+     "price": 62.83
+    },
+    {
+     "size": 16,
+     "price": 64.4
+    },
+    {
+     "size": 18,
+     "price": 65.97
+    },
+    {
+     "size": 20,
+     "price": 67.54
+    },
+    {
+     "size": 22,
+     "price": 69.11
+    },
+    {
+     "size": 24,
+     "price": 70.69
+    },
+    {
+     "size": 26,
+     "price": 72.26
+    },
+    {
+     "size": 28,
+     "price": 73.83
+    },
+    {
+     "size": 30,
+     "price": 75.4
+    },
+    {
+     "size": 32,
+     "price": 76.97
+    },
+    {
+     "size": 34,
+     "price": 78.54
+    },
+    {
+     "size": 36,
+     "price": 80.12
+    },
+    {
+     "size": 38,
+     "price": 81.69
+    },
+    {
+     "size": 40,
+     "price": 83.26
+    },
+    {
+     "size": 42,
+     "price": 84.83
+    },
+    {
+     "size": 44,
+     "price": 86.4
+    },
+    {
+     "size": 46,
+     "price": 87.98
+    },
+    {
+     "size": 48,
+     "price": 89.55
+    },
+    {
+     "size": 50,
+     "price": 91.12
+    },
+    {
+     "size": 52,
+     "price": 92.69
+    }
+   ]
+  },
+  {
+   "name": "Flex, round",
+   "unit": "\"",
+   "sizes": [
+    {
+     "size": 6,
+     "price": 42.18
+    },
+    {
+     "size": 8,
+     "price": 47.9
+    },
+    {
+     "size": 10,
+     "price": 56.13
+    },
+    {
+     "size": 12,
+     "price": 64.35
+    },
+    {
+     "size": 14,
+     "price": 72.58
+    },
+    {
+     "size": 16,
+     "price": 80.8
+    },
+    {
+     "size": 18,
+     "price": 89.03
+    },
+    {
+     "size": 20,
+     "price": 97.25
+    },
+    {
+     "size": 22,
+     "price": 105.48
+    },
+    {
+     "size": 24,
+     "price": 113.7
+    },
+    {
+     "size": 26,
+     "price": 121.93
+    },
+    {
+     "size": 28,
+     "price": 130.15
+    },
+    {
+     "size": 30,
+     "price": 138.38
+    },
+    {
+     "size": 32,
+     "price": 146.6
+    },
+    {
+     "size": 34,
+     "price": 154.83
+    },
+    {
+     "size": 36,
+     "price": 163.05
+    },
+    {
+     "size": 38,
+     "price": 171.28
+    },
+    {
+     "size": 40,
+     "price": 179.5
+    },
+    {
+     "size": 42,
+     "price": 187.73
+    },
+    {
+     "size": 52,
+     "price": 218.85
+    }
+   ]
+  },
+  {
+   "name": "Flex, square (half girth)",
+   "unit": "\"",
+   "sizes": [
+    {
+     "size": 18,
+     "price": 95.3
+    },
+    {
+     "size": 20,
+     "price": 105.2
+    },
+    {
+     "size": 24,
+     "price": 118.74
+    },
+    {
+     "size": 28,
+     "price": 132.28
+    },
+    {
+     "size": 32,
+     "price": 145.81
+    },
+    {
+     "size": 36,
+     "price": 159.35
+    },
+    {
+     "size": 40,
+     "price": 172.89
+    },
+    {
+     "size": 44,
+     "price": 186.43
+    },
+    {
+     "size": 48,
+     "price": 199.97
+    },
+    {
+     "size": 52,
+     "price": 213.51
+    },
+    {
+     "size": 56,
+     "price": 227.05
+    },
+    {
+     "size": 60,
+     "price": 240.59
+    },
+    {
+     "size": 64,
+     "price": 254.13
+    },
+    {
+     "size": 68,
+     "price": 267.67
+    },
+    {
+     "size": 72,
+     "price": 281.21
+    },
+    {
+     "size": 76,
+     "price": 294.75
+    },
+    {
+     "size": 80,
+     "price": 308.29
+    },
+    {
+     "size": 84,
+     "price": 321.83
+    },
+    {
+     "size": 120,
+     "price": 393.68
+    }
+   ]
+  },
+  {
+   "name": "Round cap",
+   "unit": "\"",
+   "sizes": [
+    {
+     "size": 8,
+     "price": 15.94
+    },
+    {
+     "size": 10,
+     "price": 18.61
+    },
+    {
+     "size": 12,
+     "price": 21.46
+    },
+    {
+     "size": 14,
+     "price": 24.47
+    },
+    {
+     "size": 16,
+     "price": 27.67
+    },
+    {
+     "size": 18,
+     "price": 31.03
+    },
+    {
+     "size": 20,
+     "price": 34.58
+    },
+    {
+     "size": 22,
+     "price": 38.29
+    },
+    {
+     "size": 24,
+     "price": 42.18
+    },
+    {
+     "size": 26,
+     "price": 46.25
+    },
+    {
+     "size": 28,
+     "price": 50.48
+    },
+    {
+     "size": 30,
+     "price": 54.9
+    },
+    {
+     "size": 32,
+     "price": 59.48
+    },
+    {
+     "size": 33,
+     "price": 62.72
+    },
+    {
+     "size": 34,
+     "price": 65.99
+    },
+    {
+     "size": 35,
+     "price": 69.31
+    },
+    {
+     "size": 36,
+     "price": 72.68
+    },
+    {
+     "size": 37,
+     "price": 76.08
+    },
+    {
+     "size": 38,
+     "price": 79.54
+    },
+    {
+     "size": 39,
+     "price": 83.03
+    },
+    {
+     "size": 40,
+     "price": 86.57
+    },
+    {
+     "size": 41,
+     "price": 90.15
+    },
+    {
+     "size": 42,
+     "price": 93.78
+    },
+    {
+     "size": 43,
+     "price": 97.45
+    },
+    {
+     "size": 44,
+     "price": 101.16
+    },
+    {
+     "size": 45,
+     "price": 104.91
+    },
+    {
+     "size": 46,
+     "price": 108.71
+    },
+    {
+     "size": 47,
+     "price": 112.56
+    },
+    {
+     "size": 48,
+     "price": 116.44
+    },
+    {
+     "size": 49,
+     "price": 120.37
+    },
+    {
+     "size": 50,
+     "price": 124.35
+    },
+    {
+     "size": 51,
+     "price": 128.36
+    },
+    {
+     "size": 52,
+     "price": 132.42
+    },
+    {
+     "size": 53,
+     "price": 136.53
+    }
+   ]
+  },
+  {
+   "name": "Round cap, caulked",
+   "unit": "\"",
+   "sizes": [
+    {
+     "size": 8,
+     "price": 17.94
+    },
+    {
+     "size": 10,
+     "price": 20.86
+    },
+    {
+     "size": 12,
+     "price": 23.96
+    },
+    {
+     "size": 14,
+     "price": 27.22
+    },
+    {
+     "size": 16,
+     "price": 30.67
+    },
+    {
+     "size": 18,
+     "price": 34.28
+    },
+    {
+     "size": 20,
+     "price": 38.08
+    },
+    {
+     "size": 22,
+     "price": 42.04
+    },
+    {
+     "size": 24,
+     "price": 46.18
+    },
+    {
+     "size": 26,
+     "price": 50.5
+    },
+    {
+     "size": 28,
+     "price": 54.98
+    },
+    {
+     "size": 30,
+     "price": 59.65
+    },
+    {
+     "size": 32,
+     "price": 64.48
+    },
+    {
+     "size": 33,
+     "price": 68.72
+    },
+    {
+     "size": 34,
+     "price": 72.99
+    },
+    {
+     "size": 35,
+     "price": 77.31
+    },
+    {
+     "size": 36,
+     "price": 81.68
+    },
+    {
+     "size": 37,
+     "price": 86.08
+    },
+    {
+     "size": 38,
+     "price": 90.54
+    },
+    {
+     "size": 39,
+     "price": 95.03
+    },
+    {
+     "size": 40,
+     "price": 99.57
+    },
+    {
+     "size": 41,
+     "price": 104.15
+    },
+    {
+     "size": 42,
+     "price": 108.78
+    },
+    {
+     "size": 43,
+     "price": 113.45
+    },
+    {
+     "size": 44,
+     "price": 118.16
+    },
+    {
+     "size": 45,
+     "price": 122.91
+    },
+    {
+     "size": 46,
+     "price": 127.71
+    },
+    {
+     "size": 47,
+     "price": 132.56
+    },
+    {
+     "size": 48,
+     "price": 137.44
+    },
+    {
+     "size": 49,
+     "price": 142.37
+    },
+    {
+     "size": 50,
+     "price": 147.35
+    },
+    {
+     "size": 51,
+     "price": 152.36
+    },
+    {
+     "size": 52,
+     "price": 157.42
+    },
+    {
+     "size": 53,
+     "price": 162.53
+    }
+   ]
+  }
+ ]
+}
