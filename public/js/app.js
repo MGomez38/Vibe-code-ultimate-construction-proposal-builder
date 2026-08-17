@@ -74,8 +74,39 @@ async function refreshOnClock() {
     $('#on-clock-count').textContent = `${open.length} on the clock`;
   } catch { /* ignore */ }
 }
-refreshOnClock();
-setInterval(refreshOnClock, 30000);
+async function refreshCardsBadge() {
+  try {
+    const cards = await api('jobcards');
+    const n = cards.filter(c => c.status === 'submitted').length;
+    $('#cards-badge').textContent = n || '';
+  } catch { /* ignore */ }
+}
+
+// ---------------------------------------------------------------- session / user menu
+let ME = null;
+async function bootSession() {
+  ME = await api('auth/me');
+  $('#user-name').textContent = ME.name;
+  $('#user-initials').textContent = ME.name.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+}
+$('#user-chip').onclick = e => { e.stopPropagation(); $('#user-drop').classList.toggle('open'); };
+document.addEventListener('click', () => $('#user-drop').classList.remove('open'));
+$('#menu-logout').onclick = async () => { await fetch('/api/auth/logout', { method: 'POST' }); location.href = '/login'; };
+$('#menu-password').onclick = () => {
+  openModal(`
+    <div class="modal-head"><h2>Change your password</h2><button class="modal-close">×</button></div>
+    <div class="modal-body"><form id="pw-form" class="form-grid">
+      <label class="fld full">Current password<input name="current" type="password" autocomplete="current-password"></label>
+      <label class="fld full">New password<input name="next" type="password" autocomplete="new-password" placeholder="at least 6 characters"></label>
+    </form></div>
+    <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="pw-save">Update Password</button></div>`, { narrow: true });
+  $('#pw-save').onclick = async () => {
+    try {
+      const r = await api('auth/password', 'POST', formData($('#pw-form')));
+      closeModal(); toast(r.message, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+};
 
 // ---------------------------------------------------------------- router
 const PAGES = {};
@@ -83,9 +114,13 @@ const TITLES = {
   dashboard: ['Dashboard', 'Company pulse at a glance'],
   clock: ['Time Clock', 'Clock in, clock out, clock onto jobs'],
   schedule: ['Crew Schedule', 'Who is where, all week'],
-  quotes: ['Quotes', 'Estimates and proposals'],
-  jobs: ['Job Cards', 'Active and planned field work'],
+  quotes: ['Quotes', 'Estimates, proposals and customer approvals'],
+  jobs: ['Jobs', 'Active and planned field work'],
   workorders: ['Work Orders', 'Shop and fabrication queue'],
+  jobcards: ['Field Job Cards', 'Daily reports submitted by the crew'],
+  reports: ['Reports', 'Where the money comes from and where it goes'],
+  users: ['Users & Access', 'Who can sign in, and what they can see'],
+  settings: ['Settings', 'Company details, pricing defaults and email delivery'],
   inventory: ['Material Inventory', 'Stock on hand and reorder points'],
   purchasing: ['Purchasing', 'Material orders and receiving'],
   archive: ['Archive & Profit Search', 'Every job and work order, what it sold for, what it cost'],
@@ -104,6 +139,7 @@ async function route() {
   $$('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === page));
   view.innerHTML = '<div class="empty">Loading…</div>';
   try { await fn(param); } catch (e) { view.innerHTML = `<div class="empty">⚠ ${esc(e.message)}</div>`; }
+  refreshCardsBadge();
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
@@ -407,9 +443,10 @@ PAGES.quotes = async () => {
         <td>${esc(q.title)}</td>
         <td class="num">${money(q.totals.total)}</td>
         <td class="num pos">${money0(q.totals.total - q.totals.est_cost)}</td>
-        <td>${badge(q.status)}</td>
+        <td>${badge(q.status)}${q.sent_at ? `<div class="muted" style="font-size:11px;margin-top:2px">emailed ${esc(q.sent_at.slice(0, 10))}</div>` : ''}</td>
         <td style="white-space:nowrap">
           <button class="btn sm ghost" data-edit="${q.id}">Edit</button>
+          <button class="btn sm" data-mail="${q.id}">✉ Email</button>
           ${q.status !== 'accepted' && q.status !== 'declined' ? `<button class="btn sm green" data-win="${q.id}">Won → Job</button>` : ''}
         </td>
       </tr>`).join('') : '<tr><td colspan="7"><div class="empty">No quotes here.</div></td></tr>';
@@ -422,10 +459,57 @@ PAGES.quotes = async () => {
   };
   $('#q-new').onclick = () => quoteModal();
   $('#q-body').onclick = e => {
-    const editId = e.target.dataset.edit, winId = e.target.dataset.win;
+    const editId = e.target.dataset.edit, winId = e.target.dataset.win, mailId = e.target.dataset.mail;
     if (editId) quoteModal(quotes.find(q => q.id === +editId));
     if (winId) convertModal(quotes.find(q => q.id === +winId));
+    if (mailId) emailModal(quotes.find(q => q.id === +mailId));
   };
+
+  async function emailModal(q) {
+    const cfg = await api('settings');
+    const configured = !!cfg.smtp_host;
+    const greeting = q.client_contact ? q.client_contact.split(' ')[0] : '';
+    openModal(`
+      <div class="modal-head"><h2>Email proposal ${esc(q.quote_number)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        ${configured ? '' : `<div class="hr-note"><b>SMTP is not set up yet.</b> Sending now will save a full preview of the customer's email to the outbox instead of delivering it, so you can see exactly what they would get. Add your mail server under <a class="plain" href="#/settings">Settings → Email</a> to send for real.</div>`}
+        <form id="em-form" class="form-grid">
+          <label class="fld full">To<input name="to" value="${esc(q.client_email || '')}" placeholder="customer@company.com" required></label>
+          <label class="fld full">Subject<input name="subject" value="${esc(`Proposal ${q.quote_number}: ${q.title}`)}"></label>
+          <label class="fld full">Message<textarea name="message" style="min-height:130px">Hi${greeting ? ' ' + greeting : ''},
+
+Thanks for the opportunity to quote this work. Our proposal is below — you can review and approve it online with the button at the bottom.
+
+Happy to walk through any line item.</textarea></label>
+        </form>
+        <p class="muted" style="font-size:12.5px;margin-top:10px">The full itemized proposal (${money(q.totals.total)}) is attached to the message automatically, along with a secure link where the customer can approve or decline it. Approvals show up here instantly.</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn ghost" id="em-link" style="margin-right:auto">Just get the link</button>
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="em-send">${configured ? 'Send Proposal' : 'Generate Preview'}</button>
+      </div>`);
+
+    $('#em-link').onclick = async () => {
+      const r = await api(`quotes/${q.id}/link`, 'POST', {});
+      $('.modal-body').insertAdjacentHTML('beforeend', `
+        <div class="copybox"><input value="${esc(r.link)}" readonly onclick="this.select()"><button class="btn sm ghost" onclick="navigator.clipboard.writeText('${esc(r.link)}');this.textContent='Copied'">Copy</button></div>`);
+    };
+    $('#em-send').onclick = async () => {
+      const f = formData($('#em-form'));
+      const btn = $('#em-send'); btn.disabled = true; btn.textContent = 'Sending…';
+      try {
+        const r = await api(`quotes/${q.id}/email`, 'POST', f);
+        closeModal();
+        toast(r.message, r.status === 'sent' ? 'ok' : '');
+        if (r.preview) window.open(r.preview, '_blank');
+        route();
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false; btn.textContent = configured ? 'Send Proposal' : 'Generate Preview';
+      }
+    };
+  }
 
   async function quoteModal(q) {
     const [clients, numbers, settings, materials] = await Promise.all([api('clients'), api('numbers'), api('settings'), api('materials')]);
@@ -1051,5 +1135,290 @@ PAGES.team = async () => {
   }
 };
 
-// go
-route();
+// ---------------------------------------------------------------- FIELD JOB CARDS
+PAGES.jobcards = async () => {
+  const cards = await api('jobcards');
+  const pending = cards.filter(c => c.status === 'submitted');
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters" id="jc-filters">
+        <span class="chip active" data-f="submitted">Awaiting review (${pending.length})</span>
+        <span class="chip" data-f="approved">Approved</span>
+        <span class="chip" data-f="all">All</span>
+      </div>
+      <span class="muted">Crew submit these from the field portal at the end of the day.</span>
+    </div>
+    <div id="jc-list"></div>`;
+
+  function render(filter) {
+    const rows = cards.filter(c => filter === 'all' || c.status === filter);
+    $('#jc-list').innerHTML = rows.length ? rows.map(c => `
+      <div class="jobcard ${c.status === 'approved' ? 'approved' : ''}">
+        <div class="jc-head">
+          <span class="strong">${esc(c.employee_name)}</span>
+          <span class="muted">${esc(c.work_date)}</span>
+          ${c.job_number ? `<span class="mono strong">${esc(c.job_number)}</span> <span class="muted">${esc(c.job_title || '')}</span>` : '<span class="muted">Shop / no job</span>'}
+          <span class="badge b-${c.status === 'approved' ? 'accepted' : 'sent'}">${esc(cap(c.status))}</span>
+          <span class="mono" style="margin-left:auto">${c.hours} hrs</span>
+          ${c.status === 'submitted' ? `<button class="btn sm green" data-ok="${c.id}">Approve</button>` : ''}
+        </div>
+        <div class="jc-body">${esc(c.work_performed)}</div>
+        ${c.materials_used ? `<div class="jc-field"><b>Materials:</b> ${esc(c.materials_used)}</div>` : ''}
+        ${c.issues ? `<div class="jc-issue"><b>⚠ Flagged:</b> ${esc(c.issues)}</div>` : ''}
+      </div>`).join('') : '<div class="empty">Nothing here.</div>';
+  }
+  render('submitted');
+  $('#jc-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#jc-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); render(c.dataset.f);
+  };
+  $('#jc-list').onclick = async e => {
+    if (e.target.dataset.ok) {
+      await api(`jobcards/${e.target.dataset.ok}/approve`, 'POST', {});
+      toast('Job card approved', 'ok'); route();
+    }
+  };
+};
+
+// ---------------------------------------------------------------- REPORTS
+PAGES.reports = async () => {
+  const r = await api('reports');
+  const maxRev = Math.max(...r.byClient.map(c => c.revenue), 1);
+  const completed = r.jobs.filter(j => j.status === 'completed');
+  const totalRev = completed.reduce((s, j) => s + j.sold_price, 0);
+  const totalProfit = completed.reduce((s, j) => s + j.profit, 0);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Completed Revenue</div><div class="kpi-value">${money0(totalRev)}</div><div class="kpi-note">${completed.length} finished jobs</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Realized Profit</div><div class="kpi-value pos">${money0(totalProfit)}</div><div class="kpi-note">${totalRev ? Math.round(totalProfit / totalRev * 100) : 0}% blended margin</div></div>
+      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Quote Win Rate</div><div class="kpi-value">${r.winRate === null ? '—' : r.winRate + '%'}</div><div class="kpi-note">${r.quoteCounts.map(q => `${q.n} ${q.status}`).join(' · ')}</div></div>
+      <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Crew Utilization</div><div class="kpi-value">${r.labor.length ? Math.round(r.labor.reduce((s, l) => s + l.utilization, 0) / r.labor.length) : 0}%</div><div class="kpi-note">billable hours ÷ clocked hours, 30d</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>Revenue By Client <span class="hint">all time</span></h3>
+        ${r.byClient.filter(c => c.revenue > 0).map(c => `
+          <div class="bar-row">
+            <span class="lbl">${esc(c.name)}</span>
+            <span class="track"><i style="width:${Math.round(c.revenue / maxRev * 100)}%"></i></span>
+            <span class="val">${money0(c.revenue)}</span>
+          </div>`).join('') || '<div class="empty">No revenue recorded yet.</div>'}
+        <div class="legend"><span><i style="background:#131c26"></i>Revenue booked against jobs</span></div>
+      </div>
+      <div class="card">
+        <h3>Margin By Client <span class="hint">profit ÷ revenue</span></h3>
+        <table class="tbl"><thead><tr><th>Client</th><th class="num">Jobs</th><th class="num">Profit</th><th class="num">Margin</th></tr></thead><tbody>
+          ${r.byClient.filter(c => c.revenue > 0).map(c => `<tr>
+            <td class="strong">${esc(c.name)}</td><td class="num">${c.jobs}</td>
+            <td class="num ${c.profit >= 0 ? 'pos' : 'neg'}">${money0(c.profit)}</td>
+            <td class="num">${c.margin_pct}%</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+    </div>
+
+    <div class="grid grid-2 section-gap">
+      <div class="card">
+        <h3>Crew Hours &amp; Utilization <span class="hint">last 30 days</span></h3>
+        <table class="tbl"><thead><tr><th>Employee</th><th class="num">Hours</th><th class="num">Billable</th><th class="num">Util.</th><th class="num">Labor cost</th></tr></thead><tbody>
+          ${r.labor.map(l => `<tr>
+            <td class="strong">${esc(l.name)}<div class="muted" style="font-size:11.5px">${esc(l.role)}</div></td>
+            <td class="num">${l.hours}</td><td class="num">${l.billable_hours}</td>
+            <td class="num ${l.utilization >= 80 ? 'pos' : l.utilization < 50 ? 'neg' : ''}">${l.utilization}%</td>
+            <td class="num">${money0(l.cost)}</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+      <div class="card">
+        <h3>Biggest Material Spend</h3>
+        <table class="tbl"><thead><tr><th>Material</th><th class="num">Qty used</th><th class="num">Spend</th></tr></thead><tbody>
+          ${r.topMaterials.length ? r.topMaterials.map(m => `<tr>
+            <td>${esc(m.name)}</td><td class="num">${round(m.qty)}</td><td class="num">${money0(m.spend)}</td></tr>`).join('')
+            : '<tr><td colspan="3"><div class="empty">No material usage logged yet.</div></td></tr>'}
+        </tbody></table>
+      </div>
+    </div>
+
+    <div class="card section-gap">
+      <h3>Job Profitability <span class="hint">every job, best margin first</span></h3>
+      <table class="tbl"><thead><tr><th>Job</th><th>Client</th><th>Status</th><th class="num">Sold</th><th class="num">Cost</th><th class="num">Profit</th><th class="num">Margin</th></tr></thead><tbody>
+        ${[...r.jobs].sort((a, b) => b.margin_pct - a.margin_pct).map(j => `<tr>
+          <td><span class="mono strong">${esc(j.job_number)}</span> ${esc(j.title)}</td>
+          <td class="muted">${esc(j.client || '—')}</td>
+          <td>${badge(j.status)}</td>
+          <td class="num">${money0(j.sold_price)}</td>
+          <td class="num">${money0(j.total_cost)}</td>
+          <td class="num ${j.profit >= 0 ? 'pos' : 'neg'}">${money0(j.profit)}</td>
+          <td class="num">${j.margin_pct}%</td></tr>`).join('')}
+      </tbody></table>
+    </div>`;
+  function round(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+};
+
+// ---------------------------------------------------------------- USERS & ACCESS
+PAGES.users = async () => {
+  const [users, employees] = await Promise.all([api('users'), api('employees')]);
+  view.innerHTML = `
+    <div class="toolbar">
+      <span class="muted">Admins get the full Command Center. Crew get the mobile field portal only — they never see pricing, costs or margins.</span>
+      <button class="btn primary" id="u-new">+ Add User</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Username</th><th>Employee</th><th>Access</th><th>Last sign-in</th><th>Status</th><th></th>
+    </tr></thead><tbody>
+      ${users.map(u => `<tr>
+        <td class="mono strong">${esc(u.username)}${u.id === ME.id ? ' <span class="muted">(you)</span>' : ''}</td>
+        <td>${esc(u.employee_name || '—')}</td>
+        <td>${u.role === 'admin' ? '<span class="badge b-in_progress">Office / Admin</span>' : '<span class="badge b-open">Crew Portal</span>'}</td>
+        <td class="muted mono">${u.last_login ? esc(u.last_login.slice(0, 16)) : 'never'}</td>
+        <td>${u.active ? '<span class="badge b-accepted">Active</span>' : '<span class="badge b-archived">Disabled</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${u.id}">Edit</button>
+          ${u.id === ME.id ? '' : `<button class="btn sm ghost" data-del="${u.id}">Delete</button>`}
+        </td>
+      </tr>`).join('')}
+    </tbody></table></div>
+
+    <div class="card section-gap">
+      <h3>Recent Activity <span class="hint">who did what</span></h3>
+      <div id="audit-list"><div class="empty">Loading…</div></div>
+    </div>`;
+
+  api('audit').then(rows => {
+    const el = $('#audit-list'); if (!el) return;
+    el.innerHTML = rows.length ? `<table class="tbl"><thead><tr><th>When</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody>
+      ${rows.slice(0, 40).map(a => `<tr>
+        <td class="mono muted">${esc(a.created_at.slice(5, 16))}</td>
+        <td class="strong">${esc(a.username)}</td>
+        <td>${esc(cap(a.action))}</td>
+        <td class="muted">${esc(a.detail)}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">No activity recorded yet.</div>';
+  }).catch(() => {});
+
+  $('#u-new').onclick = () => userModal();
+  view.onclick = async e => {
+    if (e.target.dataset.edit) return userModal(users.find(u => u.id === +e.target.dataset.edit));
+    if (e.target.dataset.del) {
+      const u = users.find(x => x.id === +e.target.dataset.del);
+      if (!confirm(`Delete the login "${u.username}"? Their time records stay intact.`)) return;
+      try { await api('users/' + u.id, 'DELETE'); toast('User deleted', 'ok'); route(); }
+      catch (err) { toast(err.message, 'err'); }
+    }
+  };
+
+  function userModal(u) {
+    openModal(`
+      <div class="modal-head"><h2>${u ? 'Edit ' + esc(u.username) : 'Add User'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="u-form" class="form-grid">
+        ${u ? '' : '<label class="fld full">Username<input name="username" required autocapitalize="off" placeholder="e.g. dave"></label>'}
+        <label class="fld full">${u ? 'New password <span style="font-weight:400">(leave blank to keep current)</span>' : 'Password'}<input name="password" type="password" autocomplete="new-password" placeholder="at least 6 characters"></label>
+        <label class="fld">Access level<select name="role">
+          <option value="crew" ${u && u.role === 'crew' ? 'selected' : ''}>Crew — field portal only</option>
+          <option value="admin" ${u && u.role === 'admin' ? 'selected' : ''}>Admin — full Command Center</option>
+        </select></label>
+        <label class="fld">Linked employee<select name="employee_id"><option value="">— none —</option>
+          ${employees.map(e => `<option value="${e.id}" ${u && u.employee_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select></label>
+        ${u ? `<label class="fld full">Status<select name="active"><option value="1" ${u.active ? 'selected' : ''}>Active</option><option value="0" ${u.active ? '' : 'selected'}>Disabled</option></select></label>` : ''}
+      </form>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">Linking an employee is what connects a login to their schedule, time clock and assigned work orders.</p></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="u-save">Save</button></div>`, { narrow: true });
+    $('#u-save').onclick = async () => {
+      const f = formData($('#u-form'));
+      if (!f.password) delete f.password;
+      if (f.employee_id === '') f.employee_id = null;
+      try {
+        if (u) await api('users/' + u.id, 'PUT', f); else await api('users', 'POST', f);
+        closeModal(); toast('User saved', 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+};
+
+// ---------------------------------------------------------------- SETTINGS
+PAGES.settings = async () => {
+  const [s, emails] = await Promise.all([api('settings'), api('emails')]);
+  const f = (name, label, opts = {}) => `
+    <label class="fld ${opts.full ? 'full' : ''}">${label}
+      ${opts.textarea
+        ? `<textarea name="${name}" style="min-height:${opts.height || 90}px">${esc(s[name] || '')}</textarea>`
+        : `<input name="${name}" type="${opts.type || 'text'}" value="${esc(s[name] || '')}" placeholder="${esc(opts.placeholder || '')}">`}
+    </label>`;
+
+  view.innerHTML = `
+    <div class="grid grid-2">
+      <div>
+        <div class="card">
+          <h3>Company</h3>
+          <form id="set-company" class="form-grid">
+            ${f('company_name', 'Company name', { full: true })}
+            ${f('company_address', 'Address', { full: true })}
+            ${f('company_phone', 'Phone')}
+            ${f('company_email', 'Office email')}
+            ${f('company_website', 'Website', { full: true })}
+          </form>
+        </div>
+        <div class="card">
+          <h3>Pricing Defaults</h3>
+          <form id="set-pricing" class="form-grid">
+            ${f('default_labor_rate', 'Default labor rate $/hr', { type: 'number' })}
+            ${f('default_tax_pct', 'Default tax %', { type: 'number' })}
+            ${f('target_margin_pct', 'Target margin %', { type: 'number' })}
+            <div class="fld"><span></span></div>
+            ${f('quote_terms', 'Terms printed on every proposal', { textarea: true, full: true, height: 120 })}
+          </form>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Email Delivery <span class="hint">${s.smtp_host ? 'configured' : 'not configured'}</span></h3>
+          ${s.smtp_host ? '' : `<div class="hr-note">Until this is filled in, emailing a quote writes a <b>full preview to the outbox</b> instead of sending. Use the SMTP details from your email provider — for Gmail/Google Workspace that's <b>smtp.gmail.com</b>, port 587, with an app password.</div>`}
+          <form id="set-mail" class="form-grid">
+            ${f('smtp_host', 'SMTP host', { full: true, placeholder: 'smtp.gmail.com' })}
+            ${f('smtp_port', 'Port', { type: 'number', placeholder: '587' })}
+            <label class="fld">Connection<select name="smtp_secure">
+              <option value="0" ${s.smtp_secure === '1' ? '' : 'selected'}>STARTTLS (587)</option>
+              <option value="1" ${s.smtp_secure === '1' ? 'selected' : ''}>SSL/TLS (465)</option>
+            </select></label>
+            ${f('smtp_user', 'Username', { full: true })}
+            ${f('smtp_pass', 'Password / app password', { type: 'password', full: true })}
+            ${f('mail_from', 'Send proposals as', { full: true, placeholder: 'Company <office@company.com>' })}
+            ${f('app_base_url', 'Public site address (for customer approval links)', { full: true, placeholder: 'https://quotes.yourcompany.com' })}
+          </form>
+        </div>
+        <div class="card">
+          <h3>Sent Proposals <span class="hint">last 100</span></h3>
+          ${emails.length ? `<table class="tbl"><thead><tr><th>When</th><th>To</th><th>Status</th><th></th></tr></thead><tbody>
+            ${emails.map(e => `<tr>
+              <td class="mono muted">${esc(e.created_at.slice(5, 16))}</td>
+              <td>${esc(e.to_email)}<div class="muted" style="font-size:11.5px">${esc(e.subject)}</div></td>
+              <td>${e.status === 'sent' ? '<span class="badge b-accepted">Sent</span>' : e.status === 'outbox' ? '<span class="badge b-sent">Outbox</span>' : `<span class="badge b-declined" title="${esc(e.error)}">Failed</span>`}</td>
+              <td>${e.preview_file ? `<a class="plain" href="/outbox/${esc(e.preview_file)}" target="_blank">Preview</a>` : ''}</td>
+            </tr>`).join('')}
+          </tbody></table>` : '<div class="empty">No proposals emailed yet.</div>'}
+        </div>
+      </div>
+    </div>
+    <div class="toolbar section-gap" style="justify-content:flex-end">
+      <span class="muted" id="save-note"></span>
+      <button class="btn primary" id="set-save">Save All Settings</button>
+    </div>`;
+
+  $('#set-save').onclick = async () => {
+    const payload = { ...formData($('#set-company')), ...formData($('#set-pricing')), ...formData($('#set-mail')) };
+    // a masked password field means "leave it alone" — the server ignores it too
+    if (/^•+$/.test(String(payload.smtp_pass))) delete payload.smtp_pass;
+    await api('settings', 'PUT', payload);
+    toast('Settings saved', 'ok');
+    $('#save-note').textContent = 'Saved ' + new Date().toLocaleTimeString();
+  };
+};
+
+// go — verify the session first so the console never renders half-signed-in
+(async () => {
+  try { await bootSession(); }
+  catch { return void (location.href = '/login'); }
+  refreshOnClock();
+  setInterval(refreshOnClock, 30000);
+  route();
+})();

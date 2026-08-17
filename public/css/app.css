@@ -74,10 +74,41 @@ body {
 }
 .nav a.active svg { opacity: 1; }
 
+.nav-badge {
+  margin-left: auto; background: var(--amber); color: var(--ink);
+  font-size: 10.5px; font-weight: 800; padding: 1px 7px; border-radius: 99px; min-width: 18px; text-align: center;
+}
+.nav-badge:empty { display: none; }
+
 .sidebar-foot {
   padding: 12px 16px; border-top: 1px solid rgba(255,255,255,.08);
   display: flex; align-items: center; gap: 8px; font-size: 12px; color: #9fb0c3;
 }
+
+/* user menu */
+.usermenu { position: relative; }
+.user-chip {
+  display: flex; align-items: center; gap: 8px; background: var(--paper);
+  border: 1px solid var(--line); border-radius: 99px; padding: 4px 13px 4px 4px;
+  font-size: 13px; font-weight: 650; color: var(--ink); cursor: pointer; font-family: inherit;
+}
+.user-chip:hover { background: #eceef0; }
+.avatar {
+  width: 27px; height: 27px; border-radius: 50%; background: var(--ink); color: var(--amber);
+  display: grid; place-items: center; font-size: 11px; font-weight: 800; letter-spacing: .5px;
+}
+.usermenu-drop {
+  position: absolute; right: 0; top: calc(100% + 8px); background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(19,28,38,.16);
+  min-width: 200px; padding: 6px; display: none; z-index: 60;
+}
+.usermenu-drop.open { display: block; }
+.usermenu-drop a, .usermenu-drop button {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  padding: 9px 11px; border-radius: 7px; font-size: 13.5px; color: var(--ink);
+  cursor: pointer; font-family: inherit; text-decoration: none;
+}
+.usermenu-drop a:hover, .usermenu-drop button:hover { background: var(--paper); }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
 @keyframes pulse { 50% { opacity: .4; } }
 
@@ -337,8 +368,41 @@ label.fld { display: flex; flex-direction: column; gap: 5px; font-size: 12px; fo
 a.plain { color: var(--blue); text-decoration: none; font-weight: 600; }
 a.plain:hover { text-decoration: underline; }
 
+/* settings & reports */
+.settings-nav { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.hr-note {
+  background: #fdf7e8; border: 1px solid #f0dcae; border-radius: 9px;
+  padding: 11px 14px; font-size: 12.5px; color: #7a5c12; line-height: 1.55; margin-bottom: 14px;
+}
+.hr-note b { color: #5e460b; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+.bar-row .lbl { width: 170px; font-size: 13px; font-weight: 600; flex-shrink: 0; }
+.bar-row .track { flex: 1; height: 20px; background: #edf0f4; border-radius: 5px; overflow: hidden; }
+.bar-row .track i { display: block; height: 100%; background: var(--ink); border-radius: 5px; }
+.bar-row .track i.amber { background: var(--amber); }
+.bar-row .val { width: 108px; text-align: right; font-family: var(--mono); font-size: 13px; font-weight: 650; }
+
+.jobcard {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  padding: 14px; margin-bottom: 10px; box-shadow: var(--shadow);
+  border-left: 4px solid var(--blue);
+}
+.jobcard.approved { border-left-color: var(--green); opacity: .72; }
+.jobcard .jc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.jobcard .jc-body { font-size: 13.5px; line-height: 1.6; color: var(--ink); }
+.jobcard .jc-field { margin-top: 7px; font-size: 13px; color: var(--steel); }
+.jobcard .jc-field b { color: var(--ink); font-weight: 650; }
+.jobcard .jc-issue { background: #fbe7e7; border-radius: 7px; padding: 9px 11px; color: #b03030; margin-top: 9px; font-size: 13px; }
+
+.copybox {
+  display: flex; gap: 8px; align-items: center; background: var(--paper);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; margin-top: 10px;
+}
+.copybox input { flex: 1; border: 0; background: transparent; font-family: var(--mono); font-size: 12.5px; outline: none; color: var(--steel); }
+
 @media (max-width: 900px) {
   .sidebar { display: none; }
+  .user-chip span:not(.avatar) { display: none; }
   .global-search { width: 180px; }
   .view { padding: 16px; }
   .kpis { grid-template-columns: 1fr 1fr; }

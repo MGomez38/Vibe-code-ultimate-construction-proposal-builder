@@ -160,7 +160,71 @@ CREATE TABLE IF NOT EXISTS time_entries (
   clock_out TEXT,
   notes TEXT DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'crew',   -- admin | crew
+  employee_id INTEGER REFERENCES employees(id),
+  active INTEGER DEFAULT 1,
+  last_login TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS job_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER REFERENCES jobs(id),
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  work_date TEXT NOT NULL,
+  hours REAL DEFAULT 0,
+  work_performed TEXT DEFAULT '',
+  materials_used TEXT DEFAULT '',
+  issues TEXT DEFAULT '',
+  status TEXT DEFAULT 'submitted',     -- submitted | approved
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS email_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  to_email TEXT NOT NULL,
+  subject TEXT DEFAULT '',
+  kind TEXT DEFAULT 'quote',
+  related_type TEXT DEFAULT '',
+  related_id INTEGER,
+  status TEXT DEFAULT 'sent',          -- sent | outbox | failed
+  error TEXT DEFAULT '',
+  preview_file TEXT DEFAULT '',
+  sent_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER REFERENCES users(id),
+  username TEXT DEFAULT '',
+  action TEXT NOT NULL,
+  detail TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
 `);
+
+// ---------------------------------------------------------------- column migrations
+function addColumn(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some(c => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+addColumn('quotes', 'public_token', `TEXT DEFAULT ''`);
+addColumn('quotes', 'sent_at', 'TEXT');
+addColumn('quotes', 'responded_at', 'TEXT');
+addColumn('quotes', 'client_signature', `TEXT DEFAULT ''`);
 
 // ---------------------------------------------------------------- helpers
 function iso(d) { return d.toISOString().replace('T', ' ').slice(0, 19); }
@@ -180,9 +244,22 @@ function dateStr(offsetDays) {
 const seeded = db.prepare(`SELECT value FROM settings WHERE key = 'seeded'`).get();
 if (!seeded) {
   const tx = () => {
-    db.prepare(`INSERT INTO settings (key, value) VALUES ('company_name', ?)`).run('Diverse Trade Services');
-    db.prepare(`INSERT INTO settings (key, value) VALUES ('default_labor_rate', '65')`).run();
-    db.prepare(`INSERT INTO settings (key, value) VALUES ('target_margin_pct', '30')`).run();
+    const setSetting = db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)`);
+    const defaults = {
+      company_name: 'Diverse Trade Services',
+      company_address: '4820 Industrial Parkway, Fairview',
+      company_phone: '(555) 100-0000',
+      company_email: 'office@diversetradeservices.net',
+      company_website: 'diversetradeservices.net',
+      default_labor_rate: '65',
+      target_margin_pct: '30',
+      default_tax_pct: '7.25',
+      quote_terms: 'Prices valid for 30 days from the date of this proposal. 40% deposit due at contract signing, balance due on completion. Work performed during standard business hours unless otherwise noted. Any change in scope will be quoted as a written change order before work proceeds.',
+      app_base_url: 'http://localhost:3000',
+      mail_from: 'Diverse Trade Services <office@diversetradeservices.net>',
+      smtp_host: '', smtp_port: '587', smtp_user: '', smtp_pass: '', smtp_secure: '0',
+    };
+    for (const [k, v] of Object.entries(defaults)) setSetting.run(k, v);
 
     const insClient = db.prepare(`INSERT INTO clients (name, contact, phone, email, address) VALUES (?,?,?,?,?)`);
     const clients = [
@@ -328,6 +405,24 @@ if (!seeded) {
       out.setTime(out.getTime() + hours * 3600e3);
       insTime.run(emp, job, job ? 'job' : 'shift', inT, iso(out), '');
     }
+
+    // user accounts — one admin (owner) plus a crew login per field employee
+    const insUser = db.prepare(`INSERT INTO users (username, password_hash, role, employee_id) VALUES (?,?,?,?)`);
+    const { hashPassword } = require('./auth');
+    const accounts = [
+      ['mike', 'admin123', 'admin', 1],
+      ['carlos', 'crew123', 'crew', 2],
+      ['jess', 'crew123', 'crew', 3],
+      ['andre', 'crew123', 'crew', 4],
+      ['sam', 'crew123', 'crew', 5],
+      ['kayla', 'crew123', 'crew', 6],
+    ];
+    accounts.forEach(([u, p, r, e]) => insUser.run(u, hashPassword(p), r, e));
+
+    // a couple of submitted field job cards awaiting office approval
+    const insCard = db.prepare(`INSERT INTO job_cards (job_id, employee_id, work_date, hours, work_performed, materials_used, issues, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)`);
+    insCard.run(1, 2, dateStr(-1), 9, 'Framed north and east demising walls, set door bucks for offices 3-6.', '48 studs, 2 boxes screws', '', 'submitted', daysAgo(1, 16));
+    insCard.run(2, 3, dateStr(-1), 8.5, 'Demo of old deck complete, hauled debris. Started ledger and footings layout.', 'Dumpster pull #2', 'Two footings hit buried irrigation line — client notified, may need a change order.', 'submitted', daysAgo(1, 17));
 
     db.prepare(`INSERT INTO settings (key, value) VALUES ('seeded', '1')`).run();
   };
