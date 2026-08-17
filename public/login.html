@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign In — DTS Command Center</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%23131c26'/><path d='M22 70 L50 26 L78 70 Z' fill='none' stroke='%23f5a524' stroke-width='9' stroke-linejoin='round'/><rect x='42' y='56' width='16' height='14' fill='%23f5a524'/></svg>">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Inter, Roboto, Arial, sans-serif;
+    min-height: 100vh; display: grid; grid-template-columns: 1.1fr 1fr; color: #131c26;
+  }
+  .hero {
+    background:
+      linear-gradient(rgba(19,28,38,.95), rgba(19,28,38,.95)),
+      repeating-linear-gradient(0deg, transparent 0 31px, rgba(245,165,36,.07) 31px 32px),
+      repeating-linear-gradient(90deg, transparent 0 31px, rgba(245,165,36,.07) 31px 32px);
+    background-color: #131c26; color: #fff;
+    display: flex; flex-direction: column; justify-content: center; padding: 60px;
+  }
+  .logo { display: flex; align-items: center; gap: 14px; margin-bottom: 40px; }
+  .logo-text { line-height: 1.1; }
+  .logo-name { font-size: 26px; font-weight: 800; letter-spacing: 4px; }
+  .logo-sub { font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: #f5a524; }
+  .hero h1 { font-size: 38px; font-weight: 800; letter-spacing: -.8px; line-height: 1.15; margin-bottom: 16px; }
+  .hero h1 span { color: #f5a524; }
+  .hero p { font-size: 15px; color: #9fb0c3; line-height: 1.7; max-width: 460px; }
+  .features { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 22px; margin-top: 36px; max-width: 480px; }
+  .feature { display: flex; align-items: center; gap: 9px; font-size: 13.5px; color: #cfd8e3; }
+  .feature b { color: #f5a524; font-size: 15px; }
+
+  .panel { display: flex; align-items: center; justify-content: center; padding: 40px; background: #f4f5f2; }
+  .box { width: 100%; max-width: 380px; }
+  .box h2 { font-size: 23px; font-weight: 750; margin-bottom: 5px; }
+  .box .lede { font-size: 13.5px; color: #8496aa; margin-bottom: 26px; }
+  label { display: block; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #47586c; margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 13px 14px; font-size: 15px; border: 1px solid #dde3ea; border-radius: 10px;
+    background: #fff; outline: none; margin-bottom: 16px; font-family: inherit;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus { border-color: #f5a524; box-shadow: 0 0 0 3px rgba(245,165,36,.2); }
+  button {
+    width: 100%; padding: 14px; font-size: 15px; font-weight: 750; border: 0; border-radius: 10px;
+    background: #f5a524; color: #131c26; cursor: pointer; font-family: inherit;
+    transition: filter .15s, transform .05s;
+  }
+  button:hover { filter: brightness(1.07); }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .6; cursor: default; }
+  .error {
+    background: #fbe7e7; color: #b03030; padding: 11px 14px; border-radius: 9px;
+    font-size: 13.5px; font-weight: 600; margin-bottom: 16px; display: none;
+  }
+  .error.show { display: block; }
+  .demo {
+    margin-top: 26px; padding: 15px; background: #fff; border: 1px dashed #dde3ea;
+    border-radius: 10px; font-size: 12.5px; color: #47586c; line-height: 1.8;
+  }
+  .demo b { color: #131c26; }
+  .demo code { font-family: ui-monospace, Menlo, monospace; background: #f4f5f2; padding: 1px 6px; border-radius: 4px; }
+  .demo-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #8496aa; font-weight: 700; margin-bottom: 6px; }
+
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; }
+    .hero { padding: 40px 28px; }
+    .hero h1 { font-size: 28px; }
+    .features { display: none; }
+    .panel { padding: 28px; }
+  }
+</style>
+</head>
+<body>
+  <div class="hero">
+    <div class="logo">
+      <svg viewBox="0 0 100 100" width="44" height="44"><rect width="100" height="100" rx="18" fill="#1b2836"/><path d="M22 70 L50 26 L78 70 Z" fill="none" stroke="#f5a524" stroke-width="9" stroke-linejoin="round"/><rect x="42" y="56" width="16" height="14" fill="#f5a524"/></svg>
+      <div class="logo-text">
+        <div class="logo-name">DTS</div>
+        <div class="logo-sub">Command Center</div>
+      </div>
+    </div>
+    <h1>Run the whole job<br>from <span>one screen.</span></h1>
+    <p>Quotes, crews, inventory, shop work orders and every dollar of profit — connected, so the office and the field are never working off different numbers.</p>
+    <div class="features">
+      <div class="feature"><b>◆</b> Quote &amp; email proposals</div>
+      <div class="feature"><b>◆</b> Crew scheduling</div>
+      <div class="feature"><b>◆</b> Time clock on jobs</div>
+      <div class="feature"><b>◆</b> Material inventory</div>
+      <div class="feature"><b>◆</b> Shop work orders</div>
+      <div class="feature"><b>◆</b> Profit on every job</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="box">
+      <h2>Sign in</h2>
+      <p class="lede">Office staff land in the Command Center. Crew land in the field portal.</p>
+      <div class="error" id="err"></div>
+      <form id="form">
+        <label for="u">Username</label>
+        <input id="u" name="username" autocomplete="username" autocapitalize="off" autofocus required>
+        <label for="p">Password</label>
+        <input id="p" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit" id="go">Sign In</button>
+      </form>
+      <div class="demo">
+        <div class="demo-title">Demo accounts</div>
+        <div><b>Office / admin:</b> <code>mike</code> / <code>admin123</code></div>
+        <div><b>Crew:</b> <code>carlos</code>, <code>jess</code>, <code>sam</code> / <code>crew123</code></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const form = document.getElementById('form');
+  const err = document.getElementById('err');
+  const go = document.getElementById('go');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    err.classList.remove('show');
+    go.disabled = true; go.textContent = 'Signing in…';
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: document.getElementById('u').value, password: document.getElementById('p').value }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sign in failed');
+      location.href = data.home;
+    } catch (e) {
+      err.textContent = e.message; err.classList.add('show');
+      go.disabled = false; go.textContent = 'Sign In';
+      document.getElementById('p').value = '';
+    }
+  });
+</script>
+</body>
+</html>

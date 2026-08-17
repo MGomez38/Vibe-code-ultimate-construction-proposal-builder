@@ -1,0 +1,3476 @@
+/* ============================================================
+   DTS Command Center — single-page application
+   ============================================================ */
+'use strict';
+
+// ---------------------------------------------------------------- helpers
+const $ = (sel, el = document) => el.querySelector(sel);
+const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
+const view = $('#view');
+
+async function api(path, method = 'GET', body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch('/api/' + path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+const money = n => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const money0 = n => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const cap = s => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+function toast(msg, kind = '') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.textContent = msg;
+  $('#toast-root').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 350); }, 3400);
+}
+
+function badge(status) { return `<span class="badge b-${esc(status)}">${esc(cap(status))}</span>`; }
+
+function openModal(html, { narrow = false } = {}) {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal ${narrow ? 'narrow' : ''}">${html}</div>`;
+  root.onclick = e => { if (e.target === root) closeModal(); };
+  $$('.modal-close', root).forEach(b => b.onclick = closeModal);
+  return root;
+}
+function closeModal() { $('#modal-root').innerHTML = ''; }
+
+function formData(form) {
+  const out = {};
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    out[el.name] = el.type === 'number' ? (el.value === '' ? 0 : Number(el.value)) : el.value;
+  }
+  return out;
+}
+
+// UTC-stored timestamps → local display
+function parseTs(ts) { return new Date(ts.replace(' ', 'T') + 'Z'); }
+function fmtTime(ts) { return parseTs(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+function fmtDateTime(ts) { return parseTs(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+function hoursBetween(a, b) { return Math.round((parseTs(b) - parseTs(a)) / 36e5 * 100) / 100; }
+function elapsed(ts) {
+  const mins = Math.floor((Date.now() - parseTs(ts)) / 60000);
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+}
+
+// live top bar clock + on-clock counter
+setInterval(() => {
+  $('#topbar-clock').textContent = new Date().toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' });
+}, 1000);
+async function refreshOnClock() {
+  try {
+    const open = await api('clock/status');
+    $('#on-clock-count').textContent = `${open.length} on the clock`;
+  } catch { /* ignore */ }
+}
+async function refreshBadges() {
+  try {
+    const [cards, cos, aging, subs] = await Promise.all([
+      api('jobcards'), api('changeorders'), api('invoices/aging'), api('subcontractors'),
+    ]);
+    const set = (sel, n) => { const el = $(sel); if (el) el.textContent = n || ''; };
+    set('#cards-badge', cards.filter(c => c.status === 'submitted').length);
+    set('#co-badge', cos.filter(c => c.status === 'sent').length);
+    set('#ar-badge', aging.open.filter(o => o.days_overdue > 0).length);
+    set('#sub-badge', subs.filter(s => s.active && !s.compliant).length);
+    api('cashflow?weeks=13').then(cf => { const el = $('#cash-badge'); if (el) el.textContent = cf.first_shortfall ? '!' : ''; }).catch(() => {});
+  } catch { /* ignore */ }
+}
+
+// ---------------------------------------------------------------- session / user menu
+let ME = null;
+async function bootSession() {
+  ME = await api('auth/me');
+  $('#user-name').textContent = ME.name;
+  $('#user-initials').textContent = ME.name.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  renderEntitySwitch();
+}
+
+/** Which set of books you are in — colour-coded so you always know. */
+function renderEntitySwitch() {
+  const s = ME.scope;
+  const active = s.active;
+  document.documentElement.style.setProperty('--entity', active ? active.accent : '#8fa3bb');
+  $('#brand-name').textContent = active ? active.code : 'GROUP';
+  $('#brand-sub').textContent = active ? active.name : (ME.group_name || 'All entities');
+
+  const box = $('#entity-switch');
+  if (!s.can_switch) {
+    box.innerHTML = `<div class="entity-pinned">${esc(active ? active.name : '')}</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <button class="ent ${s.is_group ? 'on' : ''}" data-co="group" style="--c:#8fa3bb">Group</button>
+    ${s.companies.map(c => `<button class="ent ${active && active.id === c.id ? 'on' : ''}" data-co="${c.code}" style="--c:${esc(c.accent)}" title="${esc(c.name)}">${esc(c.code)}</button>`).join('')}`;
+  box.onclick = async e => {
+    const b = e.target.closest('[data-co]');
+    if (!b) return;
+    await api('scope', 'POST', { company: b.dataset.co });
+    ME = await api('auth/me');
+    renderEntitySwitch();
+    route();
+    toast(b.dataset.co === 'group' ? 'Viewing the whole group' : `Switched to ${b.title || b.dataset.co}`, 'ok');
+  };
+}
+// ---------------------------------------------------------------- ask-anything drawer
+/**
+ * Answers come from a snapshot of this entity's own books, taken at the
+ * moment you ask. Nothing is remembered between sessions and nothing goes
+ * out that the signed-in user could not already see on screen.
+ */
+const AID = { thread: [], loaded: false };
+const AID_STARTERS = [
+  'Which jobs are running below our target margin?',
+  'What is past due and who owes it?',
+  'Where is my labor estimate furthest off?',
+  'What should I order this week?',
+];
+
+function aidRender() {
+  $('#aid-log').innerHTML = AID.thread.length
+    ? AID.thread.map(m => `<div class="aid-msg ${m.role}">${m.role === 'assistant' ? m.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>') : esc(m.content)}</div>`).join('')
+      + (AID.busy ? '<div class="aid-msg assistant thinking">Reading your books…</div>' : '')
+    : `<div class="aid-empty">
+        <p>Ask anything about the work in front of you. Every answer is pulled from <b>${esc(ME?.scope?.active?.name || 'your books')}</b> as they stand right now.</p>
+        ${AID_STARTERS.map(s => `<button class="aid-starter">${esc(s)}</button>`).join('')}
+      </div>`;
+  $('#aid-log').scrollTop = $('#aid-log').scrollHeight;
+}
+
+async function aidAsk(question) {
+  if (!question.trim() || AID.busy) return;
+  AID.thread.push({ role: 'user', content: question });
+  AID.busy = true; aidRender();
+  try {
+    const r = await api('ai/ask', 'POST', { question, thread: AID.thread.slice(0, -1) });
+    AID.thread.push({ role: 'assistant', content: r.answer || r.message || 'No answer came back.' });
+  } catch (e) {
+    AID.thread.push({ role: 'assistant', content: `Could not reach the assistant: ${e.message}` });
+  }
+  AID.busy = false; aidRender();
+}
+
+$('#ai-open').onclick = async () => {
+  $('#ai-drawer').classList.add('open');
+  if (!AID.loaded) {
+    AID.loaded = true;
+    aidRender();
+    try {
+      const s = await api('ai/status');
+      $('#aid-mode').textContent = s.mode === 'model' ? s.model : 'needs an API key — Settings → AI Assistant';
+      $('#aid-mode').className = 'ai-mode ' + (s.mode === 'model' ? 'live' : 'local');
+    } catch { /* the drawer still opens */ }
+  }
+  $('#aid-input').focus();
+};
+$('#aid-close').onclick = () => $('#ai-drawer').classList.remove('open');
+$('#aid-send').onclick = () => { const v = $('#aid-input').value; $('#aid-input').value = ''; aidAsk(v); };
+$('#aid-input').onkeydown = e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#aid-send').click(); }
+};
+$('#aid-log').onclick = e => {
+  if (e.target.classList.contains('aid-starter')) aidAsk(e.target.textContent);
+};
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('#ai-drawer').classList.remove('open');
+});
+
+$('#user-chip').onclick = e => { e.stopPropagation(); $('#user-drop').classList.toggle('open'); };
+document.addEventListener('click', () => $('#user-drop').classList.remove('open'));
+$('#menu-logout').onclick = async () => { await fetch('/api/auth/logout', { method: 'POST' }); location.href = '/login'; };
+$('#menu-password').onclick = () => {
+  openModal(`
+    <div class="modal-head"><h2>Change your password</h2><button class="modal-close">×</button></div>
+    <div class="modal-body"><form id="pw-form" class="form-grid">
+      <label class="fld full">Current password<input name="current" type="password" autocomplete="current-password"></label>
+      <label class="fld full">New password<input name="next" type="password" autocomplete="new-password" placeholder="at least 6 characters"></label>
+    </form></div>
+    <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="pw-save">Update Password</button></div>`, { narrow: true });
+  $('#pw-save').onclick = async () => {
+    try {
+      const r = await api('auth/password', 'POST', formData($('#pw-form')));
+      closeModal(); toast(r.message, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+};
+
+// ---------------------------------------------------------------- router
+const PAGES = {};
+const TITLES = {
+  dashboard: ['Dashboard', 'Company pulse at a glance'],
+  clock: ['Time Clock', 'Clock in, clock out, clock onto jobs'],
+  schedule: ['Crew Schedule', 'Who is where, all week'],
+  quotes: ['Quotes', 'Estimates, proposals and customer approvals'],
+  jobs: ['Jobs', 'Active and planned field work'],
+  workorders: ['Work Orders', 'Shop and fabrication queue'],
+  jobcards: ['Field Job Cards', 'Daily reports submitted by the crew'],
+  changeorders: ['Change Orders', 'Added scope, priced and signed before you build it'],
+  invoices: ['Invoices & Receivables', 'What you have billed and what you are owed'],
+  cashflow: ['Cash Flow Forecast', 'What is coming in, what is going out, and when it gets tight'],
+  payroll: ['Payroll', 'Hours, gross pay and certified payroll for public work'],
+  subs: ['Subcontractors', 'Trades, insurance certificates and expiry dates'],
+  group: ['Group View', 'Both companies side by side, with intercompany work netted out'],
+  consumption: ['Shop Consumption', 'Metal, gauge and solder actually used at the bench'],
+  reports: ['Reports', 'Where the money comes from and where it goes'],
+  users: ['Users & Access', 'Who can sign in, and what they can see'],
+  settings: ['Settings', 'Company details, pricing defaults and email delivery'],
+  inventory: ['Material Inventory', 'Stock on hand and reorder points'],
+  duct: ['Quote Duct & Fittings', 'Pick a size, add it, done — priced from your own book'],
+  purchasing: ['Purchasing', 'Material orders and receiving'],
+  archive: ['Archive & Profit Search', 'Every job and work order, what it sold for, what it cost'],
+  insights: ['AI Insights', 'What the numbers are trying to tell you'],
+  clients: ['Clients', 'Customer directory'],
+  team: ['Team', 'Employees, roles and rates'],
+};
+
+async function route() {
+  const hash = location.hash.replace(/^#\//, '') || 'dashboard';
+  const [page, param] = hash.split('/');
+  const fn = PAGES[page] || PAGES.dashboard;
+  // A modal left open across a navigation leaves its backdrop over the new
+  // page, and every click lands on nothing.
+  closeModal();
+  const [title, sub] = TITLES[page] || TITLES.dashboard;
+  $('#page-title').textContent = title;
+  $('#page-sub').textContent = sub;
+  $$('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === page));
+  view.innerHTML = '<div class="empty">Loading…</div>';
+  try { await fn(param); } catch (e) { view.innerHTML = `<div class="empty">⚠ ${esc(e.message)}</div>`; }
+  refreshBadges();
+  window.scrollTo(0, 0);
+}
+window.addEventListener('hashchange', route);
+
+// global search → archive page
+$('#global-search').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.value.trim()) {
+    location.hash = '#/archive/' + encodeURIComponent(e.target.value.trim());
+  }
+});
+
+// ---------------------------------------------------------------- line-item editor (shared by quotes & work orders)
+function lineItemEditor(container, items, { withPrice = true, onChange } = {}) {
+  function render() {
+    container.innerHTML = `
+      <table class="li-table">
+        <thead><tr>
+          <th style="width:44%">Description</th><th>Qty</th><th>Unit</th>
+          <th>Unit cost</th>${withPrice ? '<th>Unit price</th>' : ''}<th></th>
+        </tr></thead>
+        <tbody>
+          ${items.map((it, i) => `
+            <tr data-i="${i}">
+              <td><input data-f="desc" value="${esc(it.desc)}" placeholder="Item or material"></td>
+              <td><input data-f="qty" type="number" step="any" value="${it.qty ?? 1}" style="width:70px"></td>
+              <td><input data-f="unit" value="${esc(it.unit || 'ea')}" style="width:64px"></td>
+              <td><input data-f="unit_cost" type="number" step="any" value="${it.unit_cost ?? 0}" style="width:92px"></td>
+              ${withPrice ? `<td><input data-f="unit_price" type="number" step="any" value="${it.unit_price ?? 0}" style="width:92px"></td>` : ''}
+              <td><button type="button" class="li-del" title="Remove">×</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      <button type="button" class="btn ghost sm" id="li-add" style="margin-top:8px">+ Add line</button>`;
+    container.oninput = e => {
+      const tr = e.target.closest('tr'); if (!tr) return;
+      const it = items[+tr.dataset.i];
+      const f = e.target.dataset.f;
+      it[f] = (f === 'desc' || f === 'unit') ? e.target.value : Number(e.target.value);
+      onChange && onChange();
+    };
+    container.onclick = e => {
+      if (e.target.id === 'li-add') { items.push({ desc: '', qty: 1, unit: 'ea', unit_cost: 0, unit_price: 0 }); render(); onChange && onChange(); }
+      if (e.target.classList.contains('li-del')) { items.splice(+e.target.closest('tr').dataset.i, 1); render(); onChange && onChange(); }
+    };
+  }
+  render();
+  return items;
+}
+
+/**
+ * Upload and manage plans/photos on any record. Images are downscaled in the
+ * browser first so a 12 MP phone plan photo doesn't take a minute to send.
+ */
+function attachmentEditor(container, entityType, entityId, emptyHint = '') {
+  if (!entityId) {
+    container.innerHTML = `<div class="empty" style="padding:16px;font-size:13px">${esc(emptyHint)}</div>`;
+    return;
+  }
+  const inputId = `att-file-${entityType}-${entityId}`;
+
+  async function shrink(file) {
+    if (!file.type.startsWith('image/')) return file;             // PDFs go up untouched
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+        if (scale === 1 && file.size < 1.5e6) return resolve(file);
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        c.toBlob(b => resolve(b || file), 'image/jpeg', 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  async function render() {
+    const files = await api(`attachments?entity_type=${entityType}&entity_id=${entityId}`);
+    container.innerHTML = `
+      <div class="plan-grid">
+        ${files.map(f => `
+          <div class="plan" data-id="${f.id}">
+            <a href="/uploads/${esc(f.filename)}" target="_blank" title="${esc(f.original_name)}">
+              ${f.mime === 'application/pdf'
+                ? `<span class="plan-pdf">PDF</span>`
+                : `<img src="/uploads/${esc(f.filename)}" alt="">`}
+            </a>
+            <div class="plan-name">${esc(f.caption || f.original_name)}</div>
+            <button class="plan-del" data-del="${f.id}" title="Remove">×</button>
+          </div>`).join('')}
+        <label class="plan-add" for="${inputId}">
+          <span>＋</span><small>Add plans or photos</small>
+        </label>
+      </div>
+      <input id="${inputId}" type="file" accept="image/*,application/pdf" multiple hidden>
+      <div class="muted" style="font-size:12px;margin-top:7px">Drawings, sketches, reference photos — JPG, PNG or PDF. The shop sees these on their phone.</div>`;
+
+    $(`#${inputId}`).onchange = async e => {
+      const picked = [...e.target.files];
+      if (!picked.length) return;
+      const label = container.querySelector('.plan-add');
+      label.innerHTML = `<span>…</span><small>Uploading ${picked.length}</small>`;
+      const form = new FormData();
+      for (const file of picked) {
+        const blob = await shrink(file);
+        form.append('file', blob, file.name.replace(/\.[^.]+$/, '') + (file.type === 'application/pdf' ? '.pdf' : '.jpg'));
+      }
+      try {
+        const res = await fetch(`/api/attachments?entity_type=${entityType}&entity_id=${entityId}`, { method: 'POST', body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        toast(`${data.saved.length} file${data.saved.length === 1 ? '' : 's'} attached`, 'ok');
+      } catch (err) { toast(err.message, 'err'); }
+      render();
+    };
+    container.onclick = async e => {
+      const id = e.target.dataset.del;
+      if (!id) return;
+      e.preventDefault();
+      if (!confirm('Remove this file?')) return;
+      await api('attachments/' + id, 'DELETE');
+      render();
+    };
+  }
+  render();
+}
+
+function calcQuote(items, laborHours, laborRate, markupPct, taxPct) {
+  const materials = items.reduce((s, i) => s + (i.qty || 0) * (i.unit_price || 0), 0);
+  const labor = laborHours * laborRate;
+  const subtotal = materials + labor;
+  const markup = subtotal * markupPct / 100;
+  const tax = (subtotal + markup) * taxPct / 100;
+  return { materials, labor, subtotal, markup, tax, total: subtotal + markup + tax };
+}
+
+// ---------------------------------------------------------------- DASHBOARD
+PAGES.dashboard = async () => {
+  const d = await api('dashboard');
+  const k = d.kpis;
+  const maxV = Math.max(...d.series.map(s => s.revenue), 1);
+  const bars = d.series.map((s, i) => {
+    const x = 30 + i * 55;
+    const rh = Math.round(s.revenue / maxV * 100);
+    const ph = Math.max(0, Math.round(s.profit / maxV * 100));
+    const label = new Date(s.month + '-15').toLocaleString([], { month: 'short' });
+    return `
+      <g>
+        <rect x="${x}" y="${125 - rh}" width="20" height="${rh}" rx="3" fill="#131c26"></rect>
+        <rect x="${x + 23}" y="${125 - ph}" width="12" height="${ph}" rx="3" fill="#f5a524"></rect>
+        <text x="${x + 17}" y="140" font-size="9" text-anchor="middle" fill="#8496aa">${label}</text>
+      </g>`;
+  }).join('');
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Active Jobs</div><div class="kpi-value">${k.activeJobs}</div><div class="kpi-note">${d.wip.length} in progress</div></div>
+      <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Open Work Orders</div><div class="kpi-value">${k.openWOs}</div><div class="kpi-note">${k.rushWOs ? `<span class="neg">${k.rushWOs} rush</span>` : 'no rush orders'}</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Crew On Clock</div><div class="kpi-value">${k.onClock}</div><div class="kpi-note"><a class="plain" href="#/clock">open time clock →</a></div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Quotes Outstanding</div><div class="kpi-value">${money0(k.quoteValue)}</div><div class="kpi-note">${k.pendingQuotes} pending decisions</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card chart-wrap">
+        <h3>Completed Revenue vs Profit <span class="hint">trailing 6 months</span></h3>
+        <svg viewBox="0 0 370 148">${bars}</svg>
+        <div class="legend"><span><i style="background:#131c26"></i>Revenue</span><span><i style="background:#f5a524"></i>Profit</span></div>
+      </div>
+      <div class="card">
+        <h3>Today's Crew <span class="hint">${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</span></h3>
+        ${d.todaySchedule.length ? `<table class="tbl"><thead><tr><th>Who</th><th>Assignment</th><th>Shift</th></tr></thead><tbody>
+          ${d.todaySchedule.map(s => `<tr><td class="strong">${esc(s.employee_name)}</td>
+            <td>${s.job_number ? `<span class="mono">${esc(s.job_number)}</span> ${esc(s.job_title)}` : esc(s.notes || 'Shop')}</td>
+            <td class="muted">${esc(s.shift)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">Nobody scheduled today. <a class="plain" href="#/schedule">Build the schedule →</a></div>'}
+      </div>
+    </div>
+
+    <div class="card section-gap">
+      <h3>Jobs In Progress <span class="hint">live cost vs sold price</span></h3>
+      ${d.wip.length ? `<table class="tbl"><thead><tr><th>Job</th><th>Client</th><th class="num">Sold</th><th class="num">Cost to date</th><th class="num">Projected profit</th><th>Budget burn</th></tr></thead><tbody>
+        ${d.wip.map(j => {
+          const f = j.financials, burn = f.sold_price ? Math.min(100, Math.round(f.total_cost / f.sold_price * 100)) : 0;
+          return `<tr class="clickable" onclick="location.hash='#/jobs/${j.id}'">
+            <td><span class="mono strong">${esc(j.job_number)}</span> ${esc(j.title)}</td>
+            <td class="muted">${esc(j.client_name || '')}</td>
+            <td class="num">${money0(f.sold_price)}</td>
+            <td class="num">${money0(f.total_cost)}</td>
+            <td class="num ${f.profit >= 0 ? 'pos' : 'neg'}">${money0(f.profit)}</td>
+            <td><div class="progressbar"><i class="${burn > 85 ? 'bad' : burn > 65 ? 'warn' : ''}" style="width:${burn}%"></i></div></td>
+          </tr>`;
+        }).join('')}
+      </tbody></table>` : '<div class="empty">No jobs in progress.</div>'}
+    </div>
+
+    <div class="grid grid-2 section-gap">
+      <div class="card">
+        <h3>Money Owed To You <span class="hint">accounts receivable</span></h3>
+        <div class="kpis" style="grid-template-columns:1fr 1fr;margin:0">
+          <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Outstanding</div><div class="kpi-value">${money0(k.arOutstanding)}</div><div class="kpi-note"><a class="plain" href="#/invoices">invoices →</a></div></div>
+          <div class="kpi" style="--kpi-accent:${k.arOverdue ? '#d64545' : '#2e9e6b'}"><div class="kpi-label">Past Due</div><div class="kpi-value ${k.arOverdue ? 'neg' : ''}">${money0(k.arOverdue)}</div><div class="kpi-note">${k.arOverdue ? 'chase these today' : 'nothing overdue'}</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Crew Capacity <span class="hint">next three weeks</span></h3>
+        ${d.capacity.map(w => `
+          <div class="bar-row">
+            <span class="lbl">Week of ${new Date(w.week_start + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+            <span class="track"><i class="${w.overcommitted ? 'bad' : w.utilization_pct > 85 ? 'warn' : ''}" style="width:${Math.min(100, w.utilization_pct)}%;background:${w.overcommitted ? 'var(--red)' : w.utilization_pct > 85 ? 'var(--amber)' : 'var(--ink)'}"></i></span>
+            <span class="val">${w.committed_hours}/${w.available_hours}h</span>
+          </div>
+          ${w.overcommitted ? `<div class="muted" style="font-size:12px;margin:-4px 0 8px 178px;color:var(--red)">Overcommitted${w.conflicts.length ? ` · ${w.conflicts.length} double-booking${w.conflicts.length > 1 ? 's' : ''}` : ''}</div>` : ''}
+        `).join('')}
+        <a class="plain" href="#/schedule" style="font-size:12.5px">open the schedule →</a>
+      </div>
+    </div>
+
+    <div class="kpis section-gap">
+      <div class="kpi" style="--kpi-accent:${k.lowStock ? '#d64545' : '#2e9e6b'}"><div class="kpi-label">Low Stock Items</div><div class="kpi-value">${k.lowStock}</div><div class="kpi-note"><a class="plain" href="#/inventory">view inventory →</a></div></div>
+      <div class="kpi" style="--kpi-accent:${k.pendingCOs ? '#d64545' : '#8496aa'}"><div class="kpi-label">Unsigned Change Orders</div><div class="kpi-value">${k.pendingCOs}</div><div class="kpi-note"><a class="plain" href="#/changeorders">change orders →</a></div></div>
+      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Pending Quotes</div><div class="kpi-value">${k.pendingQuotes}</div><div class="kpi-note">${money0(k.quoteValue)} · <a class="plain" href="#/quotes">follow up →</a></div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Smart Insights</div><div class="kpi-value" id="insight-count">…</div><div class="kpi-note"><a class="plain" href="#/insights">AI insights →</a></div></div>
+    </div>`;
+  api('insights').then(ins => { const el = $('#insight-count'); if (el) el.textContent = ins.length; }).catch(() => {});
+};
+
+// ---------------------------------------------------------------- TIME CLOCK
+PAGES.clock = async () => {
+  const [employees, jobs, open] = await Promise.all([
+    api('employees'), api('jobs'), api('clock/status'),
+  ]);
+  const active = employees.filter(e => e.active).sort((a, b) => a.name.localeCompare(b.name));
+  const activeJobs = jobs.filter(j => ['planned', 'in_progress'].includes(j.status));
+
+  view.innerHTML = `
+    <div class="clock-layout">
+      <div class="kiosk">
+        <div class="big-time" id="kiosk-time"></div>
+        <div class="big-date">${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</div>
+        <label>Employee</label>
+        <select id="ck-emp">${active.map(e => `<option value="${e.id}">${esc(e.name)} — ${esc(e.role)}</option>`).join('')}</select>
+        <label>Job (optional — clock straight onto a job)</label>
+        <select id="ck-job"><option value="">General shift / shop</option>
+          ${activeJobs.map(j => `<option value="${j.id}">${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}</select>
+        <label>PIN</label>
+        <input id="ck-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" autocomplete="off">
+        <div class="kiosk-btns">
+          <button class="btn primary" id="ck-in">Clock In</button>
+          <button class="btn danger" id="ck-out">Clock Out</button>
+        </div>
+        <p style="margin-top:14px;font-size:12px;color:#9fb0c3">Already on the clock and starting a job? Pick the job and hit Clock In — your time switches to that job automatically.</p>
+      </div>
+
+      <div>
+        <div class="card on-clock-list">
+          <h3>On The Clock Right Now <span class="hint">${open.length} crew</span></h3>
+          ${open.length ? open.map(t => `
+            <div class="row">
+              <div>
+                <div class="who">${esc(t.employee_name)}</div>
+                <div class="muted" style="font-size:12px">${t.job_number ? `${esc(t.job_number)} — ${esc(t.job_title)}` : 'General shift'}</div>
+              </div>
+              <div class="since">in ${fmtTime(t.clock_in)} · ${elapsed(t.clock_in)}</div>
+            </div>`).join('') : '<div class="empty">Nobody clocked in.</div>'}
+        </div>
+        <div class="card">
+          <h3>Timesheet
+            <span class="hint" style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <input type="date" id="ts-date" value="${todayStr()}" style="border:1px solid var(--line);border-radius:6px;padding:4px 7px;font-size:12.5px">
+              <button class="btn sm primary" id="ts-add">+ Add entry</button>
+            </span>
+          </h3>
+          <div id="ts-today"></div>
+        </div>
+      </div>
+    </div>`;
+
+  const tick = () => { const el = $('#kiosk-time'); if (el) el.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); };
+  tick(); const iv = setInterval(() => { if (!$('#kiosk-time')) return clearInterval(iv); tick(); }, 1000);
+
+  async function loadTimesheet() {
+    const day = $('#ts-date').value || todayStr();
+    const rows = await api(`timesheets?from=${day}&to=${day}`);
+    $('#ts-today').innerHTML = rows.length ? `<table class="tbl"><thead><tr><th>Who</th><th>Where</th><th>In</th><th>Out</th><th class="num">Hours</th><th></th></tr></thead><tbody>
+      ${rows.map(r => `<tr>
+        <td class="strong">${esc(r.employee_name)}</td>
+        <td>${r.job_number ? `<span class="mono">${esc(r.job_number)}</span>` : '<span class="muted">Shift</span>'}</td>
+        <td class="mono">${fmtTime(r.clock_in)}</td>
+        <td class="mono">${r.clock_out ? fmtTime(r.clock_out) : '<span class="badge b-in">live</span>'}</td>
+        <td class="num">${r.hours ?? '—'}</td>
+        <td style="white-space:nowrap"><button class="btn sm ghost" data-te="${r.id}">Edit</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">No entries on this day.</div>';
+    $('#ts-today').onclick = e => { if (e.target.dataset.te) entryModal(rows.find(r => r.id === +e.target.dataset.te)); };
+  }
+  $('#ts-date').onchange = loadTimesheet;
+  $('#ts-add').onclick = () => entryModal();
+  loadTimesheet();
+
+  // local datetime strings for <input type="datetime-local">, which has no timezone
+  const toLocalInput = ts => {
+    const d = parseTs(ts);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  };
+  const fromLocalInput = v => v ? new Date(v).toISOString().replace('T', ' ').slice(0, 19) : '';
+
+  function entryModal(entry) {
+    openModal(`
+      <div class="modal-head"><h2>${entry ? 'Correct time entry' : 'Add a time entry'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        ${entry ? '' : '<p class="muted" style="margin-bottom:14px;font-size:13px">Use this when somebody forgot to punch, or worked without access to the clock.</p>'}
+        <form id="te-form" class="form-grid">
+          <label class="fld">Employee<select name="employee_id">
+            ${active.map(e => `<option value="${e.id}" ${entry && entry.employee_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}
+          </select></label>
+          <label class="fld">Job<select name="job_id"><option value="">General shift / shop</option>
+            ${jobs.map(j => `<option value="${j.id}" ${entry && entry.job_id === j.id ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}
+          </select></label>
+          <label class="fld">Clock in<input name="clock_in" type="datetime-local" value="${entry ? toLocalInput(entry.clock_in) : ''}"></label>
+          <label class="fld">Clock out <span style="font-weight:400">(blank = still on the clock)</span><input name="clock_out" type="datetime-local" value="${entry && entry.clock_out ? toLocalInput(entry.clock_out) : ''}"></label>
+          <label class="fld full">Note<input name="notes" value="${esc(entry?.notes || '')}" placeholder="why this was corrected"></label>
+        </form>
+        <p class="muted" style="font-size:12.5px;margin-top:10px">Every correction is written to the activity log with the before and after times.</p>
+      </div>
+      <div class="modal-foot">
+        ${entry ? '<button class="btn danger" id="te-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="te-save">Save</button>
+      </div>`, { narrow: true });
+
+    $('#te-save').onclick = async () => {
+      const f = formData($('#te-form'));
+      const payload = { employee_id: +f.employee_id, job_id: f.job_id ? +f.job_id : null,
+        clock_in: fromLocalInput(f.clock_in), clock_out: fromLocalInput(f.clock_out) || null, notes: f.notes };
+      if (!payload.clock_in) return toast('A clock-in time is required', 'err');
+      try {
+        if (entry) await api('timeentries/' + entry.id, 'PUT', payload);
+        else await api('timeentries', 'POST', payload);
+        closeModal(); toast('Timesheet updated', 'ok'); loadTimesheet(); refreshOnClock();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    if (entry) $('#te-del').onclick = async () => {
+      if (!confirm(`Delete ${entry.employee_name}'s entry? This changes job costs and payroll.`)) return;
+      await api('timeentries/' + entry.id, 'DELETE');
+      closeModal(); toast('Entry deleted', 'ok'); loadTimesheet(); refreshOnClock();
+    };
+  }
+
+  async function punch(dir) {
+    const body = { employee_id: +$('#ck-emp').value, pin: $('#ck-pin').value };
+    if (dir === 'in' && $('#ck-job').value) body.job_id = +$('#ck-job').value;
+    try {
+      const r = await api(`clock/${dir}`, 'POST', body);
+      toast(r.message, 'ok');
+      $('#ck-pin').value = '';
+      PAGES.clock(); refreshOnClock();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+  $('#ck-in').onclick = () => punch('in');
+  $('#ck-out').onclick = () => punch('out');
+  $('#ck-pin').addEventListener('keydown', e => { if (e.key === 'Enter') punch('in'); });
+};
+
+// ---------------------------------------------------------------- SCHEDULE
+PAGES.schedule = async (param) => {
+  const weekOffset = Number(param || 0);
+  const start = new Date();
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7) + weekOffset * 7); // Monday
+  const days = [...Array(7)].map((_, i) => { const d = new Date(start); d.setDate(d.getDate() + i); return d.toISOString().slice(0, 10); });
+
+  const [employees, jobs, entries] = await Promise.all([api('employees'), api('jobs'), api('schedule')]);
+  const active = employees.filter(e => e.active).sort((a, b) => a.name.localeCompare(b.name));
+  const activeJobs = jobs.filter(j => ['planned', 'in_progress', 'on_hold'].includes(j.status));
+  const jobById = Object.fromEntries(jobs.map(j => [j.id, j]));
+
+  const cell = (emp, date) => {
+    const items = entries.filter(s => s.employee_id === emp.id && s.date === date);
+    return `<div class="sched-cell" data-emp="${emp.id}" data-date="${date}">
+      ${items.map(s => {
+        const j = s.job_id ? jobById[s.job_id] : null;
+        return `<div class="sched-item ${j ? '' : 'shop'}" data-sid="${s.id}" title="Click to remove">
+          <div class="s-title">${j ? esc(j.job_number) : 'Shop'}</div>
+          <div class="s-note">${j ? esc(j.title) : esc(s.notes || '')}${s.shift !== 'Full day' ? ` · ${esc(s.shift)}` : ''}</div>
+        </div>`;
+      }).join('')}
+      <button class="sched-add" title="Assign">+</button>
+    </div>`;
+  };
+
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters">
+        <button class="btn ghost sm" id="wk-prev">← Prev week</button>
+        <button class="btn ghost sm" id="wk-this">This week</button>
+        <button class="btn ghost sm" id="wk-next">Next week →</button>
+      </div>
+      <span class="muted">${new Date(days[0] + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric' })} – ${new Date(days[6] + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })} · click + to assign, click an assignment to remove it</span>
+    </div>
+    <div class="sched-wrap"><div class="sched-grid">
+      <div class="sched-cell sched-head">Crew</div>
+      ${days.map(d => `<div class="sched-cell sched-head ${d === todayStr() ? 'today' : ''}">${new Date(d + 'T12:00').toLocaleDateString([], { weekday: 'short', month: 'numeric', day: 'numeric' })}</div>`).join('')}
+      ${active.map(emp => `
+        <div class="sched-cell sched-emp">${esc(emp.name)}<span class="role">${esc(emp.role)}</span></div>
+        ${days.map(d => cell(emp, d)).join('')}`).join('')}
+    </div></div>`;
+
+  $('#wk-prev').onclick = () => { location.hash = `#/schedule/${weekOffset - 1}`; };
+  $('#wk-this').onclick = () => { location.hash = '#/schedule/0'; route(); };
+  $('#wk-next').onclick = () => { location.hash = `#/schedule/${weekOffset + 1}`; };
+
+  $('.sched-grid').onclick = async e => {
+    const item = e.target.closest('.sched-item');
+    if (item) {
+      if (!confirm('Remove this assignment?')) return;
+      await api('schedule/' + item.dataset.sid, 'DELETE');
+      toast('Assignment removed', 'ok'); route();
+      return;
+    }
+    const add = e.target.closest('.sched-add');
+    if (add) {
+      const cellEl = add.closest('.sched-cell');
+      const emp = active.find(x => x.id === +cellEl.dataset.emp);
+      openModal(`
+        <div class="modal-head"><h2>Assign ${esc(emp.name)} — ${new Date(cellEl.dataset.date + 'T12:00').toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</h2><button class="modal-close">×</button></div>
+        <div class="modal-body"><form id="sched-form" class="form-grid">
+          <label class="fld full">Job<select name="job_id"><option value="">Shop / no job</option>
+            ${activeJobs.map(j => `<option value="${j.id}">${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}</select></label>
+          <label class="fld">Shift<select name="shift"><option>Full day</option><option>AM</option><option>PM</option></select></label>
+          <label class="fld">Note<input name="notes" placeholder="e.g. bring lift"></label>
+        </form></div>
+        <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="sched-save">Assign</button></div>`, { narrow: true });
+      $('#sched-save').onclick = async () => {
+        const d = formData($('#sched-form'));
+        await api('schedule', 'POST', { employee_id: emp.id, job_id: d.job_id || null, date: cellEl.dataset.date, shift: d.shift, notes: d.notes });
+        closeModal(); toast('Crew assigned', 'ok'); route();
+      };
+    }
+  };
+};
+
+// ---------------------------------------------------------------- QUOTES
+PAGES.quotes = async () => {
+  const quotes = await api('quotes');
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters" id="q-filters">
+        ${['all', 'draft', 'sent', 'accepted', 'declined'].map(s => `<span class="chip ${s === 'all' ? 'active' : ''}" data-f="${s}">${cap(s)}</span>`).join('')}
+      </div>
+      <button class="btn primary" id="q-new">+ New Quote</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Quote</th><th>Client</th><th>Title</th><th class="num">Total</th><th class="num">Est. profit</th><th>Status</th><th></th>
+    </tr></thead><tbody id="q-body"></tbody></table></div>`;
+
+  function renderRows(filter) {
+    const rows = quotes.filter(q => filter === 'all' || q.status === filter);
+    $('#q-body').innerHTML = rows.length ? rows.map(q => `
+      <tr>
+        <td class="mono strong">${esc(q.quote_number)}</td>
+        <td>${esc(q.client_name || '—')}</td>
+        <td>${esc(q.title)}</td>
+        <td class="num">${money(q.totals.total)}</td>
+        <td class="num pos">${money0(q.totals.total - q.totals.est_cost)}</td>
+        <td>${badge(q.status)}
+          ${q.sent_at ? `<div class="muted" style="font-size:11px;margin-top:2px">rev ${q.revision || 1} · emailed ${esc(q.sent_at.slice(0, 10))}</div>` : ''}
+          ${q.has_drift ? '<div class="drift" title="The customer\'s copy is out of date">edited since sent</div>' : ''}
+        </td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${q.id}">Edit</button>
+          <button class="btn sm" data-mail="${q.id}">✉ Email</button>
+          ${q.status !== 'accepted' && q.status !== 'declined' ? `<button class="btn sm green" data-win="${q.id}">Won → Job</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="7"><div class="empty">No quotes here.</div></td></tr>';
+  }
+  renderRows('all');
+  $('#q-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#q-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); renderRows(c.dataset.f);
+  };
+  $('#q-new').onclick = () => quoteModal();
+  $('#q-body').onclick = e => {
+    const editId = e.target.dataset.edit, winId = e.target.dataset.win, mailId = e.target.dataset.mail;
+    if (editId) quoteModal(quotes.find(q => q.id === +editId));
+    if (winId) convertModal(quotes.find(q => q.id === +winId));
+    if (mailId) emailModal(quotes.find(q => q.id === +mailId));
+  };
+
+  async function emailModal(q) {
+    const cfg = await api('settings');
+    const configured = !!cfg.smtp_host;
+    const greeting = q.client_contact ? q.client_contact.split(' ')[0] : '';
+    openModal(`
+      <div class="modal-head"><h2>Email proposal ${esc(q.quote_number)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        ${configured ? '' : `<div class="hr-note"><b>SMTP is not set up yet.</b> Sending now will save a full preview of the customer's email to the outbox instead of delivering it, so you can see exactly what they would get. Add your mail server under <a class="plain" href="#/settings">Settings → Email</a> to send for real.</div>`}
+        <form id="em-form" class="form-grid">
+          <label class="fld full">To<input name="to" value="${esc(q.client_email || '')}" placeholder="customer@company.com" required></label>
+          <label class="fld full">Subject<input name="subject" value="${esc(`Proposal ${q.quote_number}: ${q.title}`)}"></label>
+          <label class="fld full">Message<textarea name="message" style="min-height:130px">Hi${greeting ? ' ' + greeting : ''},
+
+Thanks for the opportunity to quote this work. Our proposal is below — you can review and approve it online with the button at the bottom.
+
+Happy to walk through any line item.</textarea></label>
+        </form>
+        <p class="muted" style="font-size:12.5px;margin-top:10px">The full itemized proposal (${money(q.totals.total)}) is attached to the message automatically, along with a secure link where the customer can approve or decline it. Approvals show up here instantly.</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn ghost" id="em-link" style="margin-right:auto">Just get the link</button>
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="em-send">${configured ? 'Send Proposal' : 'Generate Preview'}</button>
+      </div>`);
+
+    $('#em-link').onclick = async () => {
+      const r = await api(`quotes/${q.id}/link`, 'POST', {});
+      $('.modal-body').insertAdjacentHTML('beforeend', `
+        <div class="copybox"><input value="${esc(r.link)}" readonly onclick="this.select()"><button class="btn sm ghost" onclick="navigator.clipboard.writeText('${esc(r.link)}');this.textContent='Copied'">Copy</button></div>`);
+    };
+    $('#em-send').onclick = async () => {
+      const f = formData($('#em-form'));
+      const btn = $('#em-send'); btn.disabled = true; btn.textContent = 'Sending…';
+      try {
+        const r = await api(`quotes/${q.id}/email`, 'POST', f);
+        closeModal();
+        toast(r.message, r.status === 'sent' ? 'ok' : '');
+        if (r.preview) window.open(r.preview, '_blank');
+        route();
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false; btn.textContent = configured ? 'Send Proposal' : 'Generate Preview';
+      }
+    };
+  }
+
+  async function quoteModal(q) {
+    const [clients, numbers, settings, materials] = await Promise.all([api('clients'), api('numbers'), api('settings'), api('materials')]);
+    const items = q ? JSON.parse(q.items || '[]') : [];
+    const root = openModal(`
+      <div class="modal-head"><h2>${q ? 'Edit ' + esc(q.quote_number) : 'New Quote ' + esc(numbers.quote)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <form id="q-form" class="form-grid">
+          <label class="fld">Client<select name="client_id">${clients.map(c => `<option value="${c.id}" ${q && q.client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+          <label class="fld">Status<select name="status">${['draft', 'sent', 'accepted', 'declined'].map(s => `<option ${q && q.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+          <label class="fld full">Title<input name="title" required value="${esc(q?.title || '')}" placeholder="e.g. Warehouse mezzanine framing"></label>
+          <label class="fld full">Scope description<textarea name="description">${esc(q?.description || '')}</textarea></label>
+          <label class="fld">Labor hours<input name="labor_hours" type="number" step="any" value="${q?.labor_hours ?? 0}"></label>
+          <label class="fld">Labor rate $/hr<input name="labor_rate" type="number" step="any" value="${q?.labor_rate ?? settings.default_labor_rate ?? 65}"></label>
+          <label class="fld">Markup %<input name="markup_pct" type="number" step="any" value="${q?.markup_pct ?? 10}"></label>
+          <label class="fld">Tax %<input name="tax_pct" type="number" step="any" value="${q?.tax_pct ?? 0}"></label>
+          <label class="fld">Valid until<input name="valid_until" type="date" value="${esc(q?.valid_until || '')}"></label>
+          <label class="fld">Pull from inventory<select id="q-mat"><option value="">— pick a material —</option>
+            ${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${money(m.sell_price)}/${esc(m.unit)})</option>`).join('')}</select></label>
+        </form>
+        <div class="aibox" id="aibox">
+          <div class="aibox-head">
+            <h3><span class="ai-spark">✦</span> Draft this quote for me</h3>
+            <span class="ai-mode" id="ai-mode">checking…</span>
+          </div>
+          <p class="ai-sub">Describe the work the way you would say it out loud. Every price comes from your own history and material list — anything new comes back blank on purpose.</p>
+          <textarea id="ai-desc" rows="4" placeholder="e.g. Frame a 20x30 storage room in the warehouse.
+120 2x4 studs 8ft
+14 sheets of 5/8 drywall
+2 pails interior paint
+24 hours framing and hanging"></textarea>
+          <div class="ai-acts">
+            <button class="btn primary sm" id="ai-go">✦ Draft line items</button>
+            <button class="btn ghost sm" id="ai-from-scope">Use the scope box above</button>
+            <button class="btn ghost sm" id="ai-polish" title="Rewrite the scope description so it can go in front of a customer">Tidy up the scope wording</button>
+          </div>
+          <div id="ai-out"></div>
+        </div>
+
+        <h3 style="margin:16px 0 4px;font-size:13px">Line items</h3>
+        <div id="q-items"></div>
+        <div class="quote-summary" id="q-summary"></div>
+
+        <div class="estimator">
+          <h3>Price History <span class="hint">what you have charged for this before</span></h3>
+          <input id="est-q" placeholder="Search your history — e.g. railing, plywood, bollard">
+          <div id="est-results"></div>
+          <div id="est-warnings"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        ${q ? `<button class="btn danger" id="q-del" style="margin-right:auto">Delete</button>` : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="q-save">${q ? 'Save Changes' : 'Create Quote'}</button>
+      </div>`);
+
+    const summary = () => {
+      const f = formData($('#q-form'));
+      const t = calcQuote(items, f.labor_hours, f.labor_rate, f.markup_pct, f.tax_pct);
+      $('#q-summary').innerHTML = `
+        <div>Materials<b>${money(t.materials)}</b></div>
+        <div>Labor<b>${money(t.labor)}</b></div>
+        <div>Markup<b>${money(t.markup)}</b></div>
+        <div>Tax<b>${money(t.tax)}</b></div>
+        <div class="grand">Quote total<b>${money(t.total)}</b></div>`;
+    };
+    lineItemEditor($('#q-items'), items, { onChange: () => { summary(); scheduleBenchmark(); } });
+    $('#q-form').addEventListener('input', () => { summary(); scheduleBenchmark(); });
+    summary();
+
+    $('#q-mat').onchange = e => {
+      const m = materials.find(x => x.id === +e.target.value);
+      if (m) { items.push({ desc: m.name, qty: 1, unit: m.unit, unit_cost: m.unit_cost, unit_price: m.sell_price }); redrawItems(); }
+      e.target.value = '';
+    };
+
+    // ---- estimating feedback loop ----
+    function redrawItems() {
+      lineItemEditor($('#q-items'), items, { onChange: () => { summary(); scheduleBenchmark(); } });
+      summary(); scheduleBenchmark();
+    }
+    let benchTimer;
+    const scheduleBenchmark = () => { clearTimeout(benchTimer); benchTimer = setTimeout(runBenchmark, 500); };
+
+    async function runBenchmark() {
+      const box = $('#est-warnings');
+      if (!box) return;
+      const f = formData($('#q-form'));
+      try {
+        const b = await api('quotes/benchmark', 'POST', { ...f, items: items.filter(i => i.desc) });
+        const bits = [];
+        if (b.labor_accuracy.avg_variance_pct !== null) {
+          bits.push(`<div class="est-fact">Across ${b.labor_accuracy.samples.length} completed jobs your labor estimates ran
+            <b class="${b.labor_accuracy.avg_variance_pct > 0 ? 'neg' : 'pos'}">${b.labor_accuracy.avg_variance_pct > 0 ? '+' : ''}${b.labor_accuracy.avg_variance_pct}%</b> against the clock.</div>`);
+        }
+        if (b.similar_jobs.length) {
+          bits.push(`<div class="est-fact">Similar past work: ${b.similar_jobs.slice(0, 3).map(s =>
+            `<span class="mono">${esc(s.job_number)}</span> <b class="${s.margin_pct >= b.target_margin_pct ? 'pos' : 'neg'}">${s.margin_pct}%</b>`).join(' · ')}</div>`);
+        }
+        box.innerHTML = bits.join('') + b.warnings.map(w => `
+          <div class="est-warn ${esc(w.level)}"><h5>${esc(w.title)}</h5><p>${esc(w.detail)}</p></div>`).join('');
+      } catch { box.innerHTML = ''; }
+    }
+
+    // ---- AI drafting ----
+    let drafted = [];
+    api('ai/status').then(s => {
+      const el = $('#ai-mode'); if (!el) return;
+      el.textContent = s.mode === 'model'
+        ? `${esc(s.model)} · grounded in ${s.catalog_size} of your priced items`
+        : `Reading your own ${s.catalog_size} priced items`;
+      el.className = 'ai-mode ' + (s.mode === 'model' ? 'live' : 'local');
+      if (s.mode !== 'model') {
+        const p = $('#ai-polish'); if (p) { p.disabled = true; p.title = 'Needs an API key — Settings → AI Assistant'; }
+      }
+    }).catch(() => {});
+
+    async function runDraft() {
+      const desc = $('#ai-desc').value.trim();
+      if (desc.length < 4) return toast('Describe the work first', 'err');
+      const btn = $('#ai-go'); btn.disabled = true; btn.textContent = 'Reading your scope…';
+      $('#ai-out').innerHTML = '<div class="ai-thinking">Matching each line against your price history…</div>';
+      try {
+        const f = formData($('#q-form'));
+        const d = await api('ai/draft', 'POST', { description: desc, title: f.title, client_id: f.client_id });
+        drafted = d.items || [];
+        renderDraft(d);
+      } catch (e) {
+        $('#ai-out').innerHTML = `<div class="est-warn high"><h5>Could not draft that</h5><p>${esc(e.message)}</p></div>`;
+      } finally { btn.disabled = false; btn.innerHTML = '✦ Draft line items'; }
+    }
+
+    function renderDraft(d) {
+      if (d.note) return void ($('#ai-out').innerHTML = `<div class="est-warn medium"><h5>Nothing to price from yet</h5><p>${esc(d.note)}</p></div>`);
+      if (!drafted.length) return void ($('#ai-out').innerHTML = '<div class="empty" style="padding:14px">Could not pull any line items out of that. Try one item per line.</div>');
+      const priced = drafted.filter(i => i.unit_price > 0);
+      const value = drafted.reduce((s, i) => s + i.qty * i.unit_price, 0);
+      $('#ai-out').innerHTML = `
+        ${d.fallback_reason ? `<div class="est-warn medium"><h5>Drafted from your history instead</h5><p>The model could not be reached (${esc(d.fallback_reason)}), so these lines were matched locally against your own pricing.</p></div>` : ''}
+        <div class="ai-summary">
+          <b>${drafted.length}</b> line${drafted.length === 1 ? '' : 's'} ·
+          <b>${priced.length}</b> priced from your history ·
+          <b>${drafted.length - priced.length}</b> need${drafted.length - priced.length === 1 ? 's' : ''} a price ·
+          worth <b>${money(value)}</b> before labor
+        </div>
+        <table class="ai-lines"><tbody>
+          ${drafted.map((i, n) => `<tr data-n="${n}" class="${i.unit_price > 0 ? '' : 'unpriced'}">
+            <td class="pick"><input type="checkbox" checked data-pick="${n}"></td>
+            <td>
+              <div class="al-desc">${esc(i.desc)} <span class="al-src s-${esc(i.source)}">${i.source === 'catalog' ? 'in stock' : i.source === 'history' ? 'your price' : 'needs price'}</span></div>
+              <div class="al-why">${esc(i.why)}</div>
+            </td>
+            <td class="num mono">${i.qty} ${esc(i.unit)}</td>
+            <td class="num mono"><b>${i.unit_price > 0 ? money(i.unit_price) : '—'}</b></td>
+          </tr>`).join('')}
+        </tbody></table>
+        ${d.labor_hours ? `<label class="ai-labor"><input type="checkbox" id="ai-take-labor" checked>
+          Set labor to <b>${d.labor_hours} hrs</b> at ${money(d.labor_rate || 0)}/hr${d.labor_basis ? ` — ${esc(d.labor_basis)}` : ''}</label>` : ''}
+        ${d.scope_summary ? `<label class="ai-labor"><input type="checkbox" id="ai-take-scope">
+          Replace the scope description with the tightened-up version</label>
+          <div class="ai-scope">${esc(d.scope_summary)}</div>` : ''}
+        ${(d.assumptions || []).length ? `<div class="ai-notes"><h5>What it assumed</h5><ul>${d.assumptions.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>` : ''}
+        ${(d.questions || []).length ? `<div class="ai-notes q"><h5>Answer these before you send it</h5><ul>${d.questions.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>` : ''}
+        <div class="ai-acts">
+          <button class="btn primary sm" id="ai-add">Add the checked lines to this quote</button>
+          <button class="btn ghost sm" id="ai-clear">Discard</button>
+        </div>`;
+
+      $('#ai-add').onclick = () => {
+        const picks = [...document.querySelectorAll('[data-pick]')].filter(c => c.checked).map(c => +c.dataset.pick);
+        if (!picks.length) return toast('Nothing checked', 'err');
+        for (const n of picks) {
+          const i = drafted[n];
+          items.push({ desc: i.desc, qty: i.qty, unit: i.unit, unit_cost: i.unit_cost, unit_price: i.unit_price });
+        }
+        const takeLabor = $('#ai-take-labor');
+        if (takeLabor && takeLabor.checked && d.labor_hours) {
+          $('#q-form').labor_hours.value = d.labor_hours;
+          if (d.labor_rate) $('#q-form').labor_rate.value = d.labor_rate;
+        }
+        const takeScope = $('#ai-take-scope');
+        if (takeScope && takeScope.checked && d.scope_summary) $('#q-form').description.value = d.scope_summary;
+        const unpriced = picks.filter(n => !(drafted[n].unit_price > 0)).length;
+        $('#ai-out').innerHTML = '';
+        drafted = [];
+        redrawItems();
+        toast(`${picks.length} line${picks.length === 1 ? '' : 's'} added${unpriced ? ` — ${unpriced} still need${unpriced === 1 ? 's' : ''} a price` : ''}`, 'ok');
+      };
+      $('#ai-clear').onclick = () => { drafted = []; $('#ai-out').innerHTML = ''; };
+      $('#ai-out').onclick = ev => {
+        const tr = ev.target.closest('tr[data-n]');
+        if (!tr || ev.target.matches('input')) return;
+        const box = tr.querySelector('[data-pick]'); box.checked = !box.checked;
+      };
+    }
+
+    $('#ai-go').onclick = runDraft;
+    $('#ai-from-scope').onclick = () => {
+      const d = $('#q-form').description.value.trim();
+      if (!d) return toast('The scope description above is empty', 'err');
+      $('#ai-desc').value = d;
+      runDraft();
+    };
+    $('#ai-polish').onclick = async () => {
+      const box = $('#q-form').description;
+      if (!box.value.trim()) return toast('Write a rough scope first', 'err');
+      const btn = $('#ai-polish'); btn.disabled = true; btn.textContent = 'Rewriting…';
+      try {
+        const r = await api('ai/polish', 'POST', { text: box.value, kind: 'scope' });
+        if (r.mode === 'unavailable') toast('That needs an API key — Settings → AI Assistant', 'err');
+        else { box.value = r.text; toast('Scope rewritten — read it before you send it', 'ok'); }
+      } catch (e) { toast(e.message, 'err'); }
+      finally { btn.disabled = false; btn.textContent = 'Tidy up the scope wording'; }
+    };
+
+    let estTimer;
+    $('#est-q').oninput = e => {
+      clearTimeout(estTimer);
+      const q = e.target.value.trim();
+      if (!q) return void ($('#est-results').innerHTML = '');
+      estTimer = setTimeout(async () => {
+        const { matches } = await api('quotes/estimator?q=' + encodeURIComponent(q));
+        $('#est-results').innerHTML = matches.length ? matches.map((m, i) => `
+          <div class="est-row" data-i="${i}">
+            <div class="est-desc">${esc(m.desc)}
+              <span class="muted">${m.times_quoted ? `quoted ${m.times_quoted}×` : 'in inventory'}${m.last_on ? ` · last ${esc(m.last_on)} ${esc(m.last_used)}` : ''}${m.in_stock !== null ? ` · ${m.in_stock} on hand` : ''}</span>
+            </div>
+            <div class="est-price">
+              <b>${money(m.avg_price || m.current_price || 0)}</b>
+              <span class="muted">${m.min_price && m.max_price && m.min_price !== m.max_price ? `${money(m.min_price)}–${money(m.max_price)}` : 'avg price'}</span>
+            </div>
+            <button class="btn sm ghost" data-use="${i}">Use</button>
+          </div>`).join('') : '<div class="empty" style="padding:14px">Nothing in your history matches that yet.</div>';
+        $('#est-results').onclick = ev => {
+          const idx = ev.target.dataset.use;
+          if (idx === undefined) return;
+          const m = matches[+idx];
+          items.push({ desc: m.desc, qty: 1, unit: m.unit || 'ea',
+            unit_cost: m.avg_cost || m.current_cost || 0, unit_price: m.avg_price || m.current_price || 0 });
+          redrawItems();
+          toast(`Added at your historical price of ${money(m.avg_price || m.current_price || 0)}`, 'ok');
+        };
+      }, 300);
+    };
+    scheduleBenchmark();
+
+    $('#q-save').onclick = async () => {
+      const f = formData($('#q-form'));
+      if (!f.title) return toast('Title is required', 'err');
+      f.items = items.filter(i => i.desc);
+      if (q) { await api('quotes/' + q.id, 'PUT', f); toast('Quote updated', 'ok'); }
+      else { f.quote_number = numbers.quote; await api('quotes', 'POST', f); toast(`Quote ${numbers.quote} created`, 'ok'); }
+      closeModal(); route();
+    };
+    if (q) $('#q-del') && ($('#q-del').onclick = async () => {
+      if (!confirm(`Delete quote ${q.quote_number}? This cannot be undone.`)) return;
+      await api('quotes/' + q.id, 'DELETE'); closeModal(); toast('Quote deleted', 'ok'); route();
+    });
+    root; // keep reference
+  }
+
+  function convertModal(q) {
+    openModal(`
+      <div class="modal-head"><h2>Convert ${esc(q.quote_number)} to a Job</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <p style="margin-bottom:14px">This marks the quote <b>accepted</b>, opens a job card at the quoted price of <b>${money(q.totals.total)}</b>, and can cut a shop work order with the same line items.</p>
+        <form id="cv-form" class="form-grid">
+          <label class="fld">Start date<input type="date" name="start_date" value="${todayStr()}"></label>
+          <label class="fld">Shop work order<select name="create_work_order"><option value="1">Yes — cut a work order</option><option value="">No</option></select></label>
+        </form>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn green" id="cv-go">Create Job</button></div>`, { narrow: true });
+    $('#cv-go').onclick = async () => {
+      const f = formData($('#cv-form'));
+      const r = await api(`quotes/${q.id}/convert`, 'POST', { start_date: f.start_date, create_work_order: !!f.create_work_order });
+      closeModal(); toast(`Job ${r.job_number} created${r.work_order_id ? ' with work order' : ''}`, 'ok');
+      location.hash = '#/jobs';
+    };
+  }
+};
+
+// ---------------------------------------------------------------- JOBS
+PAGES.jobs = async (param) => {
+  if (param) return jobDetail(param);
+  const jobs = await api('jobs');
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters" id="j-filters">
+        ${['all', 'in_progress', 'planned', 'on_hold', 'completed'].map(s => `<span class="chip ${s === 'all' ? 'active' : ''}" data-f="${s}">${cap(s)}</span>`).join('')}
+      </div>
+      <button class="btn primary" id="j-new">+ New Job Card</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Job</th><th>Client</th><th>Foreman</th><th class="num">Sold</th><th class="num">Cost</th><th class="num">Profit</th><th>Status</th>
+    </tr></thead><tbody id="j-body"></tbody></table></div>`;
+
+  function renderRows(filter) {
+    const rows = jobs.filter(j => filter === 'all' || j.status === filter);
+    $('#j-body').innerHTML = rows.length ? rows.map(j => {
+      const f = j.financials;
+      return `<tr class="clickable" onclick="location.hash='#/jobs/${j.id}'">
+        <td><span class="mono strong">${esc(j.job_number)}</span> ${esc(j.title)}</td>
+        <td class="muted">${esc(j.client_name || '—')}</td>
+        <td class="muted">${esc(j.foreman_name || '—')}</td>
+        <td class="num">${money0(f.sold_price)}</td>
+        <td class="num">${money0(f.total_cost)}</td>
+        <td class="num ${f.profit >= 0 ? 'pos' : 'neg'}">${money0(f.profit)}</td>
+        <td>${badge(j.status)}</td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="7"><div class="empty">No jobs match.</div></td></tr>';
+  }
+  renderRows('all');
+  $('#j-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#j-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); renderRows(c.dataset.f);
+  };
+  $('#j-new').onclick = () => jobModal();
+};
+
+async function jobModal(job) {
+  const [clients, employees, numbers] = await Promise.all([api('clients'), api('employees'), api('numbers')]);
+  openModal(`
+    <div class="modal-head"><h2>${job ? 'Edit ' + esc(job.job_number) : 'New Job Card ' + esc(numbers.job)}</h2><button class="modal-close">×</button></div>
+    <div class="modal-body"><form id="j-form" class="form-grid">
+      <label class="fld">Client<select name="client_id">${clients.map(c => `<option value="${c.id}" ${job && job.client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+      <label class="fld">Foreman<select name="foreman_id"><option value="">—</option>${employees.filter(e => e.active).map(e => `<option value="${e.id}" ${job && job.foreman_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select></label>
+      <label class="fld full">Title<input name="title" required value="${esc(job?.title || '')}"></label>
+      <label class="fld full">Scope<textarea name="description">${esc(job?.description || '')}</textarea></label>
+      <label class="fld full">Site address<input name="address" value="${esc(job?.address || '')}"></label>
+      <label class="fld">Sold price $<input name="sold_price" type="number" step="any" value="${job?.sold_price ?? 0}"></label>
+      <label class="fld">Status<select name="status">${['planned', 'in_progress', 'on_hold', 'completed'].map(s => `<option value="${s}" ${job && job.status === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+      <label class="fld">Start date<input name="start_date" type="date" value="${esc(job?.start_date || todayStr())}"></label>
+      <label class="fld">End date<input name="end_date" type="date" value="${esc(job?.end_date || '')}"></label>
+      <label class="fld full">Notes<textarea name="notes">${esc(job?.notes || '')}</textarea></label>
+    </form></div>
+    <div class="modal-foot">
+      ${job ? '<button class="btn danger" id="j-del" style="margin-right:auto">Delete</button>' : ''}
+      <button class="btn ghost modal-close">Cancel</button>
+      <button class="btn primary" id="j-save">${job ? 'Save' : 'Create Job'}</button>
+    </div>`);
+  $('#j-save').onclick = async () => {
+    const f = formData($('#j-form'));
+    if (!f.title) return toast('Title is required', 'err');
+    if (f.status === 'completed' && (!job || job.status !== 'completed')) f.completed_at = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    if (job) { await api('jobs/' + job.id, 'PUT', f); toast('Job updated', 'ok'); }
+    else { f.job_number = numbers.job; await api('jobs', 'POST', f); toast(`Job ${numbers.job} created`, 'ok'); }
+    closeModal(); route();
+  };
+  if (job) $('#j-del').onclick = async () => {
+    if (!confirm(`Delete job ${job.job_number}?`)) return;
+    await api('jobs/' + job.id, 'DELETE'); closeModal(); toast('Job deleted', 'ok'); location.hash = '#/jobs'; route();
+  };
+}
+
+async function jobDetail(id) {
+  const [job, materials, employees] = await Promise.all([api(`jobs/${id}/detail`), api('materials'), api('employees')]);
+  const f = job.financials;
+  $('#page-title').textContent = `${job.job_number} — ${job.title}`;
+  $('#page-sub').textContent = job.client_name || '';
+  view.innerHTML = `
+    <div class="toolbar">
+      <a class="btn ghost sm" href="#/jobs">← All jobs</a>
+      <div>
+        ${badge(job.status)}
+        <button class="btn sm ghost" id="jd-edit" style="margin-left:8px">Edit job</button>
+        <button class="btn sm ghost" id="jd-fab">⚒ Send to the shop</button>
+        <button class="btn sm primary" id="jd-mat">+ Log material</button>
+      </div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Contract Value</div><div class="kpi-value">${money0(f.sold_price)}</div><div class="kpi-note">${f.change_orders.approved ? `base ${money0(f.base_price)} + ${money0(f.change_orders.approved)} in change orders` : 'no change orders'}</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Cost To Date</div><div class="kpi-value">${money0(f.total_cost)}</div><div class="kpi-note">materials ${money0(f.material_cost)} · labor ${money0(f.labor_cost)}${f.wo_cost ? ` · shop ${money0(f.wo_cost)}` : ''}${f.intercompany_cost ? ` · <b>fab ${money0(f.intercompany_cost)}</b>` : ''}${f.sub_cost ? ` · subs ${money0(f.sub_cost)}` : ''}</div></div>
+      <div class="kpi" style="--kpi-accent:${f.profit >= 0 ? '#2e9e6b' : '#d64545'}"><div class="kpi-label">Profit</div><div class="kpi-value ${f.profit >= 0 ? 'pos' : 'neg'}">${money0(f.profit)}</div><div class="kpi-note">${f.margin_pct}% margin</div></div>
+      <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Labor Hours</div><div class="kpi-value">${f.labor_hours}</div><div class="kpi-note">${f.est_labor_hours ? `${f.est_labor_hours} estimated · <span class="${f.labor_variance_pct > 0 ? 'neg' : 'pos'}">${f.labor_variance_pct > 0 ? '+' : ''}${f.labor_variance_pct}%</span>` : 'from the time clock'}</div></div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Billed</div><div class="kpi-value">${money0(f.invoicing.billed)}</div><div class="kpi-note">${f.sold_price ? Math.round(f.invoicing.billed / f.sold_price * 100) : 0}% of contract · ${f.invoicing.count} invoice${f.invoicing.count === 1 ? '' : 's'}</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Collected</div><div class="kpi-value pos">${money0(f.invoicing.paid)}</div><div class="kpi-note">cash in the bank</div></div>
+      <div class="kpi" style="--kpi-accent:${f.invoicing.outstanding > 0 ? '#d64545' : '#8496aa'}"><div class="kpi-label">Outstanding</div><div class="kpi-value">${money0(f.invoicing.outstanding)}</div><div class="kpi-note">${f.invoicing.retained ? `plus ${money0(f.invoicing.retained)} retainage held` : 'nothing retained'}</div></div>
+      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Unbilled Work</div><div class="kpi-value">${money0(Math.max(0, f.sold_price - f.invoicing.billed))}</div><div class="kpi-note">${f.change_orders.pending ? `<span class="neg">${money0(f.change_orders.pending)} in unsigned change orders</span>` : 'contract not yet invoiced'}</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>Job Card</h3>
+        <table class="tbl">
+          <tr><td class="muted" style="width:120px">Client</td><td class="strong">${esc(job.client_name || '—')}</td></tr>
+          <tr><td class="muted">Site</td><td>${esc(job.address || '—')}</td></tr>
+          <tr><td class="muted">Foreman</td><td>${esc(job.foreman_name || '—')}</td></tr>
+          <tr><td class="muted">Dates</td><td>${esc(job.start_date || '—')} → ${esc(job.end_date || 'open')}</td></tr>
+          <tr><td class="muted">Scope</td><td>${esc(job.description || '—')}</td></tr>
+          <tr><td class="muted">Notes</td><td>${esc(job.notes || '—')}</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Plans &amp; Site Photos <span class="hint">visible to the crew on their phones</span></h3>
+        <div id="jd-plans"></div>
+      </div>
+      <div class="card">
+        <h3>Materials Used <span class="hint">deducted from inventory when linked</span></h3>
+        ${job.materials.length ? `<table class="tbl"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Total</th></tr></thead><tbody>
+          ${job.materials.map(m => `<tr><td>${esc(m.description || m.material_name)}</td><td class="num">${m.qty}</td><td class="num">${money(m.unit_cost)}</td><td class="num">${money(m.qty * m.unit_cost)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No materials logged yet.</div>'}
+      </div>
+    </div>
+
+    <div class="grid grid-2 section-gap">
+      <div class="card">
+        <h3>Linked Work Orders</h3>
+        ${job.work_orders.length ? `<table class="tbl"><thead><tr><th>WO</th><th>Title</th><th>Status</th><th class="num">Sold</th></tr></thead><tbody>
+          ${job.work_orders.map(w => `<tr><td class="mono strong">${esc(w.wo_number)}</td><td>${esc(w.title)}</td><td>${badge(w.status)}</td><td class="num">${money0(w.financials.sold_price)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No work orders linked. Cut one from the Work Orders page.</div>'}
+      </div>
+      <div class="card">
+        <h3>Time Log <span class="hint">latest 50 punches</span></h3>
+        ${job.time.length ? `<table class="tbl"><thead><tr><th>Who</th><th>In</th><th>Out</th><th class="num">Hrs</th></tr></thead><tbody>
+          ${job.time.map(t => `<tr><td class="strong">${esc(t.employee_name)}</td><td class="mono">${fmtDateTime(t.clock_in)}</td>
+            <td class="mono">${t.clock_out ? fmtTime(t.clock_out) : '<span class="badge b-in">live</span>'}</td>
+            <td class="num">${t.clock_out ? hoursBetween(t.clock_in, t.clock_out) : '—'}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No time clocked on this job yet.</div>'}
+      </div>
+    </div>
+
+    <div class="grid grid-2 section-gap">
+      <div class="card">
+        <h3>Change Orders <span class="hint">added scope on this job</span>
+          <button class="btn sm primary" id="jd-co" style="margin-left:auto">+ New</button></h3>
+        ${job.change_orders.length ? `<table class="tbl"><thead><tr><th>CO</th><th>What changed</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>
+          ${job.change_orders.map(c => `<tr class="clickable" onclick="location.hash='#/changeorders'">
+            <td class="mono strong">${esc(c.co_number)}</td><td>${esc(c.title)}</td>
+            <td class="num">${money(c.totals.total)}</td><td>${badge(c.status)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No change orders. Scope creep with no change order is money you gave away.</div>'}
+      </div>
+      <div class="card">
+        <h3>Billing <span class="hint">invoices against this job</span>
+          <button class="btn sm primary" id="jd-bill" style="margin-left:auto">+ Bill</button></h3>
+        ${job.invoices.length ? `<table class="tbl"><thead><tr><th>Invoice</th><th>Type</th><th class="num">Total</th><th class="num">Balance</th><th>Status</th></tr></thead><tbody>
+          ${job.invoices.map(i => `<tr class="clickable" onclick="location.hash='#/invoices'">
+            <td class="mono strong">${esc(i.invoice_number)}</td><td class="muted">${esc(cap(i.invoice_type))}</td>
+            <td class="num">${money(i.totals.total)}</td>
+            <td class="num ${i.totals.balance > 0 ? 'neg' : 'pos'}">${money(i.totals.balance)}</td>
+            <td>${badge(i.status)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">Nothing invoiced yet on this job.</div>'}
+      </div>
+    </div>
+
+    ${job.subs.length ? `<div class="card section-gap">
+      <h3>Subcontractors On This Job</h3>
+      <table class="tbl"><thead><tr><th>Company</th><th>Trade</th><th>Scope</th><th class="num">Contract</th><th>Insurance</th></tr></thead><tbody>
+        ${job.subs.map(s => {
+          const coi = s.documents.filter(d => d.doc_type === 'COI' && d.expires_on).sort((a, b) => b.expires_on.localeCompare(a.expires_on))[0];
+          const days = coi ? Math.floor((new Date(coi.expires_on) - new Date(todayStr())) / 864e5) : null;
+          return `<tr><td class="strong">${esc(s.name)}</td><td class="muted">${esc(s.trade || '')}</td>
+            <td class="muted">${esc(s.scope || '')}</td><td class="num">${money0(s.contract_amount)}</td>
+            <td>${days === null ? '<span class="badge b-declined">No COI</span>'
+              : days < 0 ? `<span class="badge b-declined">Expired ${esc(coi.expires_on)}</span>`
+              : days <= 30 ? `<span class="badge b-in_progress">Expires in ${days}d</span>`
+              : `<span class="badge b-accepted">Current</span>`}</td></tr>`;
+        }).join('')}
+      </tbody></table>
+    </div>` : ''}
+
+    ${job.job_cards.length ? `<div class="card section-gap">
+      <h3>Field Job Cards <span class="hint">what the crew reported</span></h3>
+      ${job.job_cards.slice(0, 8).map(c => `
+        <div class="jobcard ${c.status === 'approved' ? 'approved' : ''}">
+          <div class="jc-head">
+            <span class="strong">${esc(c.employee_name)}</span><span class="muted">${esc(c.work_date)}</span>
+            <span class="badge b-${c.status === 'approved' ? 'accepted' : 'sent'}">${esc(cap(c.status))}</span>
+            <span class="mono" style="margin-left:auto">${c.hours} hrs</span>
+          </div>
+          <div class="jc-body">${esc(c.work_performed)}</div>
+          ${c.materials_used ? `<div class="jc-field"><b>Materials:</b> ${esc(c.materials_used)}</div>` : ''}
+          ${c.issues ? `<div class="jc-issue"><b>⚠ Flagged:</b> ${esc(c.issues)}</div>` : ''}
+          ${c.photos && c.photos.length ? `<div class="photo-strip">${c.photos.map(p =>
+            `<a href="/uploads/${esc(p.filename)}" target="_blank"><img src="/uploads/${esc(p.filename)}" alt="${esc(p.caption || '')}"></a>`).join('')}</div>` : ''}
+        </div>`).join('')}
+    </div>` : ''}`;
+
+  attachmentEditor($('#jd-plans'), 'job', job.id);
+  $('#jd-edit').onclick = () => jobModal(job);
+
+  $('#jd-fab').onclick = async () => {
+    const companies = ME.scope.companies.filter(c => c.id !== job.company_id);
+    if (!companies.length) return toast('There is no sister company to send work to', 'err');
+    const items = [];
+    openModal(`
+      <div class="modal-head"><h2>Send fabrication to the shop</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:14px;font-size:13px">
+          This raises a work order on the other company's books against <span class="mono strong">${esc(job.job_number)}</span>.
+          What you enter as the price is what they will charge you — it becomes their revenue and this job's cost.
+        </p>
+        <form id="fab-form" class="form-grid">
+          <label class="fld">Built by<select name="builder_company_id">
+            ${companies.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+          <label class="fld">Priority<select name="priority">${['low', 'normal', 'high', 'rush'].map(p => `<option ${p === 'normal' ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+          <label class="fld full">What are they building<input name="title" required placeholder="e.g. 12 steel window bucks per A-301"></label>
+          <label class="fld full">Details / drawing refs<textarea name="description"></textarea></label>
+          <label class="fld">Price they will charge you $<input name="sold_price" type="number" step="any" value="0" required></label>
+          <label class="fld">Needed by<input name="due_date" type="date" value="${todayStr()}"></label>
+          <label class="fld">Their shop hours (est.)<input name="labor_hours" type="number" step="any" value="0"></label>
+          <label class="fld">Type<select name="wo_type">${['Fabrication', 'Shop', 'Repair'].map(t => `<option>${t}</option>`).join('')}</select></label>
+        </form>
+        <h3 style="margin:16px 0 4px;font-size:13px">Material list for the shop</h3>
+        <div id="fab-items"></div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="fab-go">Raise Work Order</button></div>`);
+    lineItemEditor($('#fab-items'), items);
+    $('#fab-go').onclick = async () => {
+      const f = formData($('#fab-form'));
+      if (!f.title) return toast('Say what they are building', 'err');
+      try {
+        const r = await api(`jobs/${job.id}/fabricate`, 'POST', { ...f, items: items.filter(i => i.desc) });
+        closeModal(); toast(r.message, 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  };
+  $('#jd-co').onclick = () => { location.hash = '#/changeorders'; setTimeout(() => window.coModalFor && window.coModalFor(null, job.id), 400); };
+  $('#jd-bill').onclick = () => { location.hash = '#/invoices'; setTimeout(() => { const b = $('#inv-progress'); if (b) b.click(); }, 400); };
+  $('#jd-mat').onclick = () => {
+    openModal(`
+      <div class="modal-head"><h2>Log material on ${esc(job.job_number)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="m-form" class="form-grid">
+        <label class="fld full">From inventory<select name="material_id"><option value="">— custom item —</option>
+          ${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${m.qty_on_hand} ${esc(m.unit)} on hand)</option>`).join('')}</select></label>
+        <label class="fld full">Or custom description<input name="description" placeholder="leave blank when picking from inventory"></label>
+        <label class="fld">Qty<input name="qty" type="number" step="any" value="1"></label>
+        <label class="fld">Unit cost $ (auto for inventory)<input name="unit_cost" type="number" step="any" value=""></label>
+      </form></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="m-save">Log It</button></div>`, { narrow: true });
+    $('#m-save').onclick = async () => {
+      const d = formData($('#m-form'));
+      if (!d.material_id && !d.description) return toast('Pick a material or type a description', 'err');
+      await api(`jobs/${job.id}/materials`, 'POST', d);
+      closeModal(); toast('Material logged & inventory updated', 'ok'); route();
+    };
+  };
+}
+
+// ---------------------------------------------------------------- WORK ORDERS
+PAGES.workorders = async () => {
+  const [wos, employees, clients, jobs, numbers] = await Promise.all([
+    api('workorders'), api('employees'), api('clients'), api('jobs'), api('numbers'),
+  ]);
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters" id="w-filters">
+        ${['active', 'open', 'in_progress', 'completed', 'archived', 'all'].map((s, i) => `<span class="chip ${i === 0 ? 'active' : ''}" data-f="${s}">${cap(s)}</span>`).join('')}
+      </div>
+      <button class="btn primary" id="w-new">+ New Work Order</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>WO #</th><th>Title</th><th>Type</th><th>Client / Job</th><th>Assigned</th><th>Due</th><th>Priority</th><th>Status</th><th class="num">Sold</th><th></th>
+    </tr></thead><tbody id="w-body"></tbody></table></div>`;
+
+  function renderRows(filter) {
+    const rows = wos.filter(w =>
+      filter === 'all' ? true :
+      filter === 'active' ? ['open', 'in_progress'].includes(w.status) : w.status === filter);
+    $('#w-body').innerHTML = rows.length ? rows.map(w => `
+      <tr>
+        <td class="mono strong">${esc(w.wo_number)}</td>
+        <td>${esc(w.title)}${w.attachments && w.attachments.length ? `<span class="clip" title="${w.attachments.length} plan(s) attached">📎${w.attachments.length}</span>` : ''}</td>
+        <td class="muted">${esc(w.wo_type)}</td>
+        <td class="muted">${esc(w.client_name || '—')}${w.job_number ? ` · <span class="mono">${esc(w.job_number)}</span>` : ''}</td>
+        <td class="muted">${esc(w.assigned_name || '—')}</td>
+        <td class="mono">${esc(w.due_date || '—')}</td>
+        <td>${badge(w.priority)}</td>
+        <td>${badge(w.status)}</td>
+        <td class="num">${money0(w.financials.sold_price)}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${w.id}">Open</button>
+          ${w.status === 'open' ? `<button class="btn sm" data-start="${w.id}">Start</button>` : ''}
+          ${['open', 'in_progress'].includes(w.status) ? `<button class="btn sm green" data-done="${w.id}">Done</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="10"><div class="empty">Nothing here.</div></td></tr>';
+  }
+  renderRows('active');
+  $('#w-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#w-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); renderRows(c.dataset.f);
+  };
+  $('#w-new').onclick = () => woModal();
+  $('#w-body').onclick = async e => {
+    const t = e.target;
+    if (t.dataset.edit) return woModal(wos.find(w => w.id === +t.dataset.edit));
+    if (t.dataset.start) { await api('workorders/' + t.dataset.start, 'PUT', { status: 'in_progress' }); toast('Work order started', 'ok'); return route(); }
+    if (t.dataset.done) {
+      await api('workorders/' + t.dataset.done, 'PUT', { status: 'completed', completed_at: new Date().toISOString().replace('T', ' ').slice(0, 19) });
+      toast('Work order completed — it now shows in Archive & Profit', 'ok'); return route();
+    }
+  };
+
+  function woModal(w) {
+    const items = w ? JSON.parse(w.items || '[]') : [];
+    openModal(`
+      <div class="modal-head"><h2>${w ? esc(w.wo_number) + ' — ' + esc(w.title) : 'New Work Order ' + esc(numbers.wo)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <form id="w-form" class="form-grid">
+          <label class="fld full">Title<input name="title" required value="${esc(w?.title || '')}" placeholder="e.g. Fab 12 window bucks"></label>
+          <label class="fld full">Description / drawing refs<textarea name="description">${esc(w?.description || '')}</textarea></label>
+          <label class="fld">Type<select name="wo_type">${['Shop', 'Fabrication', 'Field', 'Repair', 'Install'].map(t => `<option ${w && w.wo_type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+          <label class="fld">Priority<select name="priority">${['low', 'normal', 'high', 'rush'].map(p => `<option ${w && w.priority === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+          <label class="fld">Client<select name="client_id"><option value="">—</option>${clients.map(c => `<option value="${c.id}" ${w && w.client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+          <label class="fld">Linked job<select name="job_id"><option value="">—</option>${jobs.map(j => `<option value="${j.id}" ${w && w.job_id === j.id ? 'selected' : ''}>${esc(j.job_number)} ${esc(j.title)}</option>`).join('')}</select></label>
+          <label class="fld">Assigned to<select name="assigned_to"><option value="">—</option>${employees.filter(e => e.active).map(e => `<option value="${e.id}" ${w && w.assigned_to === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select></label>
+          <label class="fld">Due date<input name="due_date" type="date" value="${esc(w?.due_date || '')}"></label>
+          <label class="fld">Est. labor hours<input name="labor_hours" type="number" step="any" value="${w?.labor_hours ?? 0}"></label>
+          <label class="fld">Shop rate $/hr<input name="labor_rate" type="number" step="any" value="${w?.labor_rate ?? 65}"></label>
+          <label class="fld">Sold price $ <span style="font-weight:400">(0 = auto from items+labor)</span><input name="sold_price" type="number" step="any" value="${w?.sold_price ?? 0}"></label>
+          <label class="fld">Status<select name="status">${['open', 'in_progress', 'completed', 'archived'].map(s => `<option value="${s}" ${w && w.status === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+        </form>
+        <h3 style="margin:16px 0 4px;font-size:13px">Materials / items</h3>
+        <div id="w-items"></div>
+
+        <h3 style="margin:18px 0 4px;font-size:13px">Plans &amp; Photos <span class="hint">what the shop sees on their phone</span></h3>
+        <div id="w-plans"></div>
+
+        ${w ? `<h3 style="margin:18px 0 4px;font-size:13px">Actually Used <span class="hint">logged at the bench</span></h3>
+        <div id="w-usage"><div class="empty" style="padding:14px">Loading…</div></div>` : ''}
+      </div>
+      <div class="modal-foot">
+        ${w ? '<button class="btn danger" id="w-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="w-save">${w ? 'Save' : 'Create Work Order'}</button>
+      </div>`);
+    lineItemEditor($('#w-items'), items);
+    attachmentEditor($('#w-plans'), 'work_order', w ? w.id : null,
+      'Save the work order first, then attach drawings and reference photos.');
+    if (w) api(`workorders/${w.id}/usage`).then(rows => {
+      const el = $('#w-usage'); if (!el) return;
+      const cost = rows.reduce((s, u) => s + u.qty * u.unit_cost, 0);
+      const solder = rows.filter(u => u.kind === 'solder').reduce((s, u) => s + u.qty, 0);
+      el.innerHTML = rows.length ? `<table class="tbl"><thead><tr>
+          <th>What</th><th>Metal / gauge</th><th>Size</th><th class="num">Qty</th><th class="num">Cost</th><th>Who</th>
+        </tr></thead><tbody>
+          ${rows.map(u => `<tr>
+            <td>${esc(u.description)}${u.notes ? `<div class="muted" style="font-size:11.5px">${esc(u.notes)}</div>` : ''}</td>
+            <td class="muted">${esc([u.metal_type, u.gauge].filter(Boolean).join(' ') || '—')}</td>
+            <td class="muted">${esc(u.size || '—')}</td>
+            <td class="num strong">${u.qty} <span class="muted">${esc(u.unit)}</span></td>
+            <td class="num">${money(u.qty * u.unit_cost)}</td>
+            <td class="muted">${esc(u.employee_name || '')}</td></tr>`).join('')}
+        </tbody></table>
+        <div class="quote-summary" style="margin-top:10px">
+          <div>Lines<b>${rows.length}</b></div>
+          ${solder ? `<div>Solder<b>${round1(solder)}"</b></div>` : ''}
+          <div class="grand">Material cost<b>${money(cost)}</b></div>
+        </div>
+        <p class="muted" style="font-size:12px;margin-top:8px">Once the bench logs anything, this replaces the planned items above when costing the ticket.</p>`
+        : '<div class="empty" style="padding:14px;font-size:13px">Nothing logged at the bench yet — the shop adds this from their phone.</div>';
+    }).catch(() => {});
+    $('#w-save').onclick = async () => {
+      const f = formData($('#w-form'));
+      if (!f.title) return toast('Title is required', 'err');
+      f.items = items.filter(i => i.desc);
+      if (f.status === 'completed' && (!w || !['completed', 'archived'].includes(w.status))) f.completed_at = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      if (w) { await api('workorders/' + w.id, 'PUT', f); toast('Work order saved', 'ok'); }
+      else { f.wo_number = numbers.wo; await api('workorders', 'POST', f); toast(`Work order ${numbers.wo} cut`, 'ok'); }
+      closeModal(); route();
+    };
+    if (w) $('#w-del').onclick = async () => {
+      if (!confirm(`Delete ${w.wo_number}?`)) return;
+      await api('workorders/' + w.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- INVENTORY
+/** A price nobody has confirmed in two years is a number, not a price. */
+const stalePrice = d => Boolean(d) && (Date.now() - Date.parse(d + 'T12:00:00Z')) > 2 * 365.25 * 86400000;
+
+PAGES.inventory = async () => {
+  const materials = await api('materials');
+  const cats = ['all', ...new Set(materials.map(m => m.category))];
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters" id="m-filters">${cats.map((c, i) => `<span class="chip ${i === 0 ? 'active' : ''}" data-f="${esc(c)}">${esc(cap(c))}</span>`).join('')}</div>
+      <div>
+        <button class="btn ghost" id="m-low">⚠ Low stock only</button>
+        <button class="btn ghost" id="m-import">⬆ Import price book</button>
+        <button class="btn primary" id="m-new">+ Add Material</button>
+      </div>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>SKU</th><th>Material</th><th>Category</th><th class="num">On hand</th><th class="num">Reorder at</th><th class="num">Unit cost</th><th class="num">Sell price</th><th>Last priced</th><th>Location</th><th>Vendor</th><th></th>
+    </tr></thead><tbody id="m-body"></tbody></table></div>`;
+
+  let lowOnly = false, cat = 'all';
+  function renderRows() {
+    const rows = materials.filter(m => (cat === 'all' || m.category === cat) && (!lowOnly || m.qty_on_hand <= m.reorder_point));
+    $('#m-body').innerHTML = rows.length ? rows.map(m => {
+      const low = m.qty_on_hand <= m.reorder_point;
+      return `<tr>
+        <td class="mono muted">${esc(m.sku)}</td>
+        <td class="strong">${esc(m.name)}</td>
+        <td class="muted">${esc(m.category)}</td>
+        <td class="num ${low ? 'stock-low' : ''}">${m.qty_on_hand} ${esc(m.unit)}${low ? ' ⚠' : ''}</td>
+        <td class="num muted">${m.reorder_point}</td>
+        <td class="num">${money(m.unit_cost)}</td>
+        <td class="num">${money(m.sell_price)}</td>
+        <td class="muted ${stalePrice(m.priced_on) ? 'stock-low' : ''}">${m.priced_on ? esc(m.priced_on) + (stalePrice(m.priced_on) ? ' ⚠' : '') : ''}</td>
+        <td class="muted">${esc(m.location)}</td>
+        <td class="muted">${esc(m.vendor)}</td>
+        <td><button class="btn sm ghost" data-edit="${m.id}">Edit</button></td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="11"><div class="empty">No materials match.</div></td></tr>';
+  }
+  renderRows();
+  $('#m-import').onclick = () => importModal();
+  $('#m-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#m-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); cat = c.dataset.f; renderRows();
+  };
+  $('#m-low').onclick = e => { lowOnly = !lowOnly; e.target.classList.toggle('primary', lowOnly); renderRows(); };
+  $('#m-new').onclick = () => matModal();
+  $('#m-body').onclick = e => { if (e.target.dataset.edit) matModal(materials.find(m => m.id === +e.target.dataset.edit)); };
+
+  /**
+   * Import the price book the office already keeps in Excel.
+   * Three steps, and nothing is written until the last one: pick the file,
+   * confirm which column is which, then see exactly what changed.
+   */
+  function importModal() {
+    let state = null;                 // {token, sheets, fields, sheet, header_index, mapping}
+    openModal(`
+      <div class="modal-head"><h2>Import your price book</h2><button class="modal-close">×</button></div>
+      <div class="modal-body" id="imp-body">
+        <p class="muted" style="line-height:1.6;margin-bottom:14px">
+          Upload the spreadsheet you already price from — <b>.xlsx</b> or <b>.csv</b>. It reads the columns,
+          shows you what it found, and only writes once you say so. Prices land in
+          <b>${esc(ME?.scope?.active?.name || 'this company')}</b> and the quoting engine starts using them immediately.
+        </p>
+        <label class="drop" id="imp-drop">
+          <input type="file" id="imp-file" accept=".xlsx,.csv,.tsv,.txt" hidden>
+          <span class="drop-big">Choose a file</span>
+          <span class="muted">or drag it here</span>
+        </label>
+        <div id="imp-out"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="imp-go" disabled>Import</button>
+      </div>`);
+
+    const out = () => $('#imp-out');
+    $('#imp-drop').onclick = () => $('#imp-file').click();
+    $('#imp-drop').ondragover = e => { e.preventDefault(); $('#imp-drop').classList.add('over'); };
+    $('#imp-drop').ondragleave = () => $('#imp-drop').classList.remove('over');
+    $('#imp-drop').ondrop = e => {
+      e.preventDefault(); $('#imp-drop').classList.remove('over');
+      if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+    };
+    $('#imp-file').onchange = e => e.target.files[0] && upload(e.target.files[0]);
+
+    async function upload(file) {
+      out().innerHTML = '<div class="ai-thinking">Reading the spreadsheet…</div>';
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/pricebook/preview', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) return void (out().innerHTML = `<div class="est-warn high"><h5>Could not read that file</h5><p>${esc(d.error)}</p></div>`);
+      const first = d.sheets[0];
+      state = { token: d.token, sheets: d.sheets, fields: d.fields, filename: d.filename,
+        sheet: first.name, header_index: first.header_index, mapping: { ...first.mapping },
+        mode: 'list', lastColumns: [],
+        size_opts: { name: first.name.replace(/[^A-Za-z0-9 ]/g, '').trim() || 'Item',
+          size_col: 0, price_col: 1, size_unit: '"', unit: 'ea', variant_row: '', last_row: '' } };
+      renderMapping(first);
+    }
+
+    function current() { return state.sheets.find(s => s.name === state.sheet) || state.sheets[0]; }
+
+    function renderMapping(res) {
+      const sheet = current();
+      const fk = Object.keys(state.fields);
+      out().innerHTML = `
+        <div class="imp-file">📄 ${esc(state.filename)}${state.sheets.length > 1 ? `
+          — sheet <select id="imp-sheet">${state.sheets.map((s, i) => `<option value="${i}" ${s.name === state.sheet ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
+        </div>
+        ${sheet.stale_formulas ? `<div class="est-warn medium"><h5>${sheet.stale_formulas} cell${sheet.stale_formulas === 1 ? ' contains' : 's contain'} a formula with no saved result</h5>
+          <p>Open the file in Excel and save it again so the calculated prices come through — otherwise those rows import blank.</p></div>` : ''}
+        <div class="imp-modes">
+          <button class="imp-mode ${state.mode === 'list' ? 'on' : ''}" data-mode="list">A list of items</button>
+          <button class="imp-mode ${state.mode === 'size' ? 'on' : ''}" data-mode="size">A size table</button>
+          <button class="imp-mode ${state.mode === 'duct' ? 'on' : ''}" data-mode="duct">A duct calculator</button>
+          <span class="muted" style="font-size:12px">${state.mode === 'size'
+            ? 'One row per size with the finished price beside it — saddles, flex, ells, taps.'
+            : state.mode === 'duct'
+            ? 'Reads the formula behind the grid, so any gauge prices — not just the one it was saved at.'
+            : 'One row per product — sheet metal, hardware, consumables.'}</span>
+        </div>
+        ${state.mode === 'size' ? renderSizeControls(sheet) : ''}
+        ${state.mode === 'duct' ? '<div id="duct-panel"><div class="ai-thinking">Reading the formula…</div></div>' : ''}
+        <h3 style="font-size:13px;margin:16px 0 4px;${state.mode !== 'list' ? 'display:none' : ''}">Which column is which</h3>
+        <p class="muted" style="font-size:12.5px;margin-bottom:10px">
+          Headings are on row <input type="number" id="imp-hdr" min="1" max="60" value="${state.header_index + 1}"
+            style="width:62px;padding:4px 6px;display:inline-block"> —
+          change it if that is wrong, then check the columns below. Everything above that row is ignored.</p>
+        <div class="imp-map" style="${state.mode !== 'list' ? 'display:none' : ''}">
+          ${fk.map(k => `<label class="fld">${esc(state.fields[k].label)}
+            <select data-map="${k}">
+              <option value="">— not in my file —</option>
+              ${sheet.headers.map((h, i) => `<option value="${i}" ${String(state.mapping[k]) === String(i) ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`).join('')}
+            </select></label>`).join('')}
+        </div>
+        <div class="imp-stats" id="imp-stats">${statsFor(res)}</div>
+        <table class="tbl imp-preview"><thead><tr><th>Item #</th><th>Description</th><th>Unit</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Margin</th></tr></thead>
+          <tbody>${(res.preview || []).map(p => {
+            // No cost column means no margin to show. Printing 100% because
+            // cost defaulted to zero reads like a windfall.
+            const m = p.sell_price > 0 && p.unit_cost > 0 ? Math.round((p.sell_price - p.unit_cost) / p.sell_price * 1000) / 10 : null;
+            return `<tr class="${p.no_price ? 'unpriced' : ''}">
+              <td class="mono muted">${esc(p.sku)}</td><td class="strong">${esc(p.name)}</td><td class="muted">${esc(p.unit)}</td>
+              <td class="num">${money(p.unit_cost)}</td><td class="num">${p.sell_price ? money(p.sell_price) : '—'}</td>
+              <td class="num ${m !== null && m < 15 ? 'stock-low' : ''}">${m === null ? '—' : m + '%'}</td></tr>`;
+          }).join('')}</tbody></table>
+        ${(res.near_duplicates || []).length ? `<div class="est-warn medium">
+          <h5>${res.near_duplicates.length} item${res.near_duplicates.length === 1 ? '' : 's'} may already be in your list under a different name</h5>
+          <p>These will import as new rows. If they are the same thing, rename one side to match before importing — two rows for one item means half your quotes get the stale price.</p>
+          <ul style="margin:8px 0 0 18px;font-size:12.5px;line-height:1.7;color:var(--steel)">
+            ${res.near_duplicates.map(d => `<li><b>${esc(d.incoming)}</b> ${money(d.incoming_price)}
+              <span class="muted">vs. existing</span> <b>${esc(d.existing)}</b> ${money(d.existing_price)}</li>`).join('')}
+          </ul></div>` : ''}
+        ${(res.skipped || []).length ? `<div class="ai-notes"><h5>Rows that will be skipped${res.skipped_count > res.skipped.length ? ` (first ${res.skipped.length} of ${res.skipped_count})` : ''}</h5>
+          <ul>${res.skipped.map(s => `<li>Row ${s.row}: ${esc(String(s.text).slice(0, 60))} — ${esc(s.reason)}</li>`).join('')}</ul></div>` : ''}`;
+
+      $('#imp-go').disabled = !res.item_count;
+      $('#imp-go').textContent = res.item_count ? `Import ${res.item_count} item${res.item_count === 1 ? '' : 's'}` : 'Nothing to import';
+
+      const sel = $('#imp-sheet');
+      if (sel) sel.onchange = e => {
+        const s = state.sheets[Number(e.target.value)];
+        if (!s) return;
+        state.sheet = s.name; state.header_index = s.header_index; state.mapping = { ...s.mapping };
+        state.size_opts.name = s.name.replace(/[^A-Za-z0-9 ]/g, '').trim() || 'Item';
+        remap();
+      };
+      $$('[data-map]').forEach(el => { el.onchange = remap; });
+      $$('[data-mode]').forEach(el => { el.onclick = () => { state.mode = el.dataset.mode; remap(); }; });
+      $$('[data-size]').forEach(el => {
+        el.onchange = () => {
+          const k = el.dataset.size;
+          if (k === 'variant_row_1') state.size_opts.variant_row = el.value === '' ? '' : Math.max(1, Number(el.value)) - 1;
+          else state.size_opts[k] = el.value;
+          remap();
+        };
+      });
+      // Re-reading the headings from a different row changes what every
+      // dropdown is choosing between, so the whole panel is rebuilt.
+      const hdr = $('#imp-hdr');
+      if (hdr) hdr.onchange = async () => {
+        const n = Math.max(1, Number(hdr.value) || 1) - 1;
+        state.header_index = n;
+        const sh = current();
+        sh.headers = (await api('pricebook/headers', 'POST', { token: state.token, sheet: state.sheet, header_index: n })).headers;
+        await remap();
+      };
+    }
+
+    /**
+     * A size table needs four answers: what the thing is called, which column
+     * holds the size, which holds the price, and — when the sheet has a second
+     * axis across the top — which row labels those columns.
+     */
+    function renderSizeControls(sheet) {
+      const o = state.size_opts;
+      const cols = Array.from({ length: sheet.width || (sheet.headers || []).length || 12 },
+        (_, i) => `<option value="${i}">Column ${i + 1}${sheet.headers && sheet.headers[i] ? ' — ' + esc(sheet.headers[i]).slice(0, 22) : ''}</option>`).join('');
+      const sel = (name, val, extra = '') => `<select data-size="${name}">${extra}${cols}</select>`
+        .replace(`<option value="${val}">`, `<option value="${val}" selected>`);
+      return `
+        <div class="imp-map" style="margin-top:12px">
+          <label class="fld">What is it called<input data-size="name" value="${esc(o.name)}" placeholder="Roof saddle"></label>
+          <label class="fld">Size column${sel('size_col', o.size_col)}</label>
+          <label class="fld">Finished price column${sel('price_col', o.price_col)}</label>
+          <label class="fld">Size is measured in<input data-size="size_unit" value="${esc(o.size_unit)}" placeholder="&quot;"></label>
+          <label class="fld">Sold by<input data-size="unit" value="${esc(o.unit)}" placeholder="ea"></label>
+          <label class="fld">Second axis labels on row <span style="font-weight:400">(blank if none)</span>
+            <input data-size="variant_row_1" type="number" min="1" max="200" value="${o.variant_row === '' ? '' : Number(o.variant_row) + 1}"
+              placeholder="none"></label>
+          <label class="fld">Last row <span style="font-weight:400">(blank = to the end)</span>
+            <input data-size="last_row" type="number" min="1" value="${esc(o.last_row || '')}" placeholder="end of sheet"></label>
+        </div>
+        ${state.lastRepeated ? `<div class="est-warn medium"><h5>${state.lastRepeated} size${state.lastRepeated === 1 ? '' : 's'} appear more than once — e.g. ${esc(state.lastRepeatedExample)}</h5>
+          <p>This sheet probably holds more than one table stacked down the page. Set <b>Last row</b> to where the first table ends, import it, then come back for the next one under its own name.</p></div>` : ''}
+        ${(state.lastColumns || []).length > 1 ? `<div class="imp-stats">Second axis found: <b>${state.lastColumns.length}</b> price columns — ${state.lastColumns.slice(0, 8).map(esc).join(', ')}${state.lastColumns.length > 8 ? '…' : ''}</div>` : ''}`;
+    }
+
+    function statsFor(res) {
+      const unpriced = (res.preview || []).filter(p => p.no_price).length;
+      return `<b>${res.item_count}</b> item${res.item_count === 1 ? '' : 's'} ready`
+        + (res.skipped_count ? ` · <b>${res.skipped_count}</b> row${res.skipped_count === 1 ? '' : 's'} skipped` : '')
+        + (unpriced ? ` · <b class="warn">${unpriced}</b> in this preview have no sell price` : '');
+    }
+
+    async function remap() {
+      if (state.mode === 'duct') return remapDuct();
+      const mapping = {};
+      $$('[data-map]').forEach(el => { if (el.value !== '') mapping[el.dataset.map] = Number(el.value); });
+      state.mapping = mapping;
+      const r = await api('pricebook/remap', 'POST', {
+        token: state.token, sheet: state.sheet, header_index: state.header_index, mapping,
+        mode: state.mode, size_opts: state.size_opts,
+      });
+      state.lastColumns = r.columns || [];
+      state.lastRepeated = r.repeated || 0;
+      state.lastRepeatedExample = r.repeated_example || '';
+      const sheet = current();
+      Object.assign(sheet, r);
+      renderMapping(r);
+    }
+
+    /** Show what the formula reads out of this sheet before saving it. */
+    async function remapDuct() {
+      renderMapping({ item_count: 0, preview: [], skipped: [] });
+      const box = $('#duct-panel'); if (!box) return;
+      const r = await api('pricebook/duct', 'POST', { token: state.token, sheet: state.sheet, opts: {}, save: false });
+      state.ductReady = !r.problems.length;
+      const m = r.model;
+      const rate = (o, suffix = '') => Object.entries(o).map(([k, v]) => `<b>${esc(k)}${esc(suffix)}</b> $${Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`).join(' · ');
+      box.innerHTML = `
+        ${r.problems.length ? `<div class="est-warn high"><h5>That sheet is not laid out the way this reader expects</h5>
+          <p>Missing ${esc(r.problems.join(', '))}. Pick the sheet your duct grid lives on.</p></div>` : ''}
+        <div class="duct-read">
+          <div><h5>Steel, per square foot</h5>${rate(m.steel_per_sqft, 'ga')}</div>
+          <div><h5>Liner, per square foot</h5>${Object.keys(m.liner_per_sqft).length ? rate(m.liner_per_sqft, '"') : '<span class="muted">none found</span>'}</div>
+          <div><h5>Labor, per unit</h5>${rate(m.labor_rate)}</div>
+          <div><h5>Markup</h5><b>${Math.round((m.markup - 1) * 100)}%</b></div>
+          <div><h5>Sizes timed</h5><b>${r.size_count}</b> — girths ${esc(m.girths.join(', '))}</div>
+          <div><h5>Lengths</h5>${esc(m.lengths.join(', '))}</div>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin-top:10px;line-height:1.6">
+          The labor times come from your grid. Everything else is computed, so when steel moves you change one
+          number and every size re-prices — instead of the grid staying frozen at the gauge it was saved on.</p>`;
+      $('#imp-go').disabled = !state.ductReady;
+      $('#imp-go').textContent = state.ductReady ? `Save this formula (${r.size_count} sizes)` : 'Cannot read that sheet';
+    }
+
+    $('#imp-go').onclick = async () => {
+      if (!state) return;
+      if (state.mode === 'duct') {
+        const btn = $('#imp-go'); btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+          const r = await api('pricebook/duct', 'POST', { token: state.token, sheet: state.sheet, opts: {}, save: true });
+          out().innerHTML = `<div class="imp-done"><h3>Duct formula saved</h3>
+            <p class="muted" style="line-height:1.6">${r.size_count} sizes, ${Object.keys(r.model.steel_per_sqft).length} gauges,
+            ${Object.keys(r.model.liner_per_sqft).length} liner thicknesses. Quote duct by writing the size —
+            <i>"6 register taps 20 girth x 12, 20ga, 1&quot; liner"</i> — and it prices from these rates.</p></div>`;
+          $('#imp-drop').style.display = 'none';
+          btn.textContent = 'Done'; btn.disabled = false;
+          btn.onclick = () => { closeModal(); route(); };
+          toast('Duct formula saved', 'ok');
+        } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = 'Save this formula'; }
+        return;
+      }
+      const btn = $('#imp-go'); btn.disabled = true; btn.textContent = 'Importing…';
+      try {
+        const r = await api('pricebook/import', 'POST', {
+          token: state.token, sheet: state.sheet, header_index: state.header_index, mapping: state.mapping,
+          mode: state.mode, size_opts: state.size_opts,
+        });
+        out().innerHTML = `
+          <div class="imp-done">
+            <h3>Price book imported</h3>
+            <div class="imp-tally">
+              <div><b>${r.added}</b><span>added</span></div>
+              <div><b>${r.updated}</b><span>updated</span></div>
+              <div><b>${r.unchanged}</b><span>already matched</span></div>
+            </div>
+            ${r.changes.length ? `<h5>Biggest price changes</h5>
+              <table class="tbl"><thead><tr><th>Item</th><th class="num">Cost</th><th class="num">Price</th></tr></thead><tbody>
+              ${r.changes.map(c => `<tr><td>${esc(c.name)}</td>
+                <td class="num">${c.was_cost !== c.now_cost ? `<span class="muted">${money(c.was_cost)}</span> → <b>${money(c.now_cost)}</b>` : money(c.now_cost)}</td>
+                <td class="num">${c.was_price !== c.now_price ? `<span class="muted">${money(c.was_price)}</span> → <b>${money(c.now_price)}</b>` : money(c.now_price)}</td>
+              </tr>`).join('')}</tbody></table>` : ''}
+            <p class="muted" style="margin-top:12px;line-height:1.6">Your quoting engine is already using these prices. A backup was written before today's changes — Settings → Backups if you need to go back.</p>
+          </div>`;
+        $('#imp-drop').style.display = 'none';
+        btn.textContent = 'Done'; btn.disabled = false;
+        btn.onclick = () => { closeModal(); route(); };
+        toast(`${r.added} added, ${r.updated} updated`, 'ok');
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false; btn.textContent = 'Import';
+      }
+    };
+  }
+
+  function matModal(m) {
+    openModal(`
+      <div class="modal-head"><h2>${m ? 'Edit ' + esc(m.name) : 'Add Material'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="mat-form" class="form-grid">
+        <label class="fld">SKU<input name="sku" value="${esc(m?.sku || '')}"></label>
+        <label class="fld">Category<input name="category" value="${esc(m?.category || 'General')}" list="cat-list"><datalist id="cat-list">${cats.filter(c => c !== 'all').map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
+        <label class="fld full">Name<input name="name" required value="${esc(m?.name || '')}"></label>
+        <label class="fld">Unit<input name="unit" value="${esc(m?.unit || 'ea')}"></label>
+        <label class="fld">Qty on hand<input name="qty_on_hand" type="number" step="any" value="${m?.qty_on_hand ?? 0}"></label>
+        <label class="fld">Reorder point<input name="reorder_point" type="number" step="any" value="${m?.reorder_point ?? 0}"></label>
+        <label class="fld">Unit cost $<input name="unit_cost" type="number" step="any" value="${m?.unit_cost ?? 0}"></label>
+        <label class="fld">Sell price $<input name="sell_price" type="number" step="any" value="${m?.sell_price ?? 0}"></label>
+        <label class="fld">Last priced<input name="priced_on" type="date" value="${esc(m?.priced_on || '')}"></label>
+        <label class="fld">Location<input name="location" value="${esc(m?.location || '')}"></label>
+        <label class="fld">Vendor<input name="vendor" value="${esc(m?.vendor || '')}"></label>
+      </form></div>
+      <div class="modal-foot">
+        ${m ? '<button class="btn danger" id="mat-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="mat-save">Save</button>
+      </div>`);
+    $('#mat-save').onclick = async () => {
+      const f = formData($('#mat-form'));
+      if (!f.name) return toast('Name is required', 'err');
+      if (m) await api('materials/' + m.id, 'PUT', f); else await api('materials', 'POST', f);
+      closeModal(); toast('Material saved', 'ok'); route();
+    };
+    if (m) $('#mat-del').onclick = async () => {
+      if (!confirm(`Delete ${m.name}?`)) return;
+      await api('materials/' + m.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- PURCHASING
+PAGES.purchasing = async () => {
+  const [pos, materials, jobs, numbers] = await Promise.all([api('purchaseorders'), api('materials'), api('jobs'), api('numbers')]);
+  const total = po => JSON.parse(po.items || '[]').reduce((s, i) => s + (i.qty || 0) * (i.unit_cost || 0), 0);
+  view.innerHTML = `
+    <div class="toolbar">
+      <span class="muted">Receiving a PO adds the quantities straight into inventory and refreshes unit costs.</span>
+      <button class="btn primary" id="po-new">+ New Purchase Order</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>PO #</th><th>Vendor</th><th>Items</th><th>For job</th><th>Expected</th><th class="num">Total</th><th>Status</th><th></th>
+    </tr></thead><tbody>
+      ${pos.length ? pos.map(po => {
+        const items = JSON.parse(po.items || '[]');
+        const j = jobs.find(x => x.id === po.job_id);
+        return `<tr>
+          <td class="mono strong">${esc(po.po_number)}</td>
+          <td>${esc(po.vendor)}</td>
+          <td class="muted">${items.map(i => `${i.qty}× ${esc(i.desc)}`).join(', ')}</td>
+          <td class="muted">${j ? `<span class="mono">${esc(j.job_number)}</span>` : 'Stock'}</td>
+          <td class="mono">${esc(po.expected_date || '—')}</td>
+          <td class="num">${money(total(po))}</td>
+          <td>${badge(po.status)}</td>
+          <td>${po.status === 'ordered' ? `<button class="btn sm green" data-recv="${po.id}">Receive</button>` : (po.received_at ? `<span class="muted" style="font-size:12px">recv ${esc(po.received_at.slice(0, 10))}</span>` : '')}</td>
+        </tr>`;
+      }).join('') : '<tr><td colspan="8"><div class="empty">No purchase orders yet.</div></td></tr>'}
+    </tbody></table></div>`;
+
+  view.onclick = async e => {
+    if (e.target.dataset.recv) {
+      if (!confirm('Receive this PO into inventory?')) return;
+      await api(`purchaseorders/${e.target.dataset.recv}/receive`, 'POST', {});
+      toast('Received — inventory updated', 'ok'); route();
+    }
+  };
+
+  $('#po-new').onclick = () => {
+    const items = [];
+    openModal(`
+      <div class="modal-head"><h2>New Purchase Order ${esc(numbers.po)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <form id="po-form" class="form-grid">
+          <label class="fld">Vendor<input name="vendor" required placeholder="e.g. SteelServ"></label>
+          <label class="fld">Expected date<input name="expected_date" type="date"></label>
+          <label class="fld">For job<select name="job_id"><option value="">Stock order</option>
+            ${jobs.filter(j => j.status !== 'completed').map(j => `<option value="${j.id}">${esc(j.job_number)} ${esc(j.title)}</option>`).join('')}</select></label>
+          <label class="fld">Add inventory item<select id="po-mat"><option value="">— pick material —</option>
+            ${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${m.qty_on_hand} on hand)</option>`).join('')}</select></label>
+          <label class="fld full">Notes<input name="notes"></label>
+        </form>
+        <h3 style="margin:14px 0 4px;font-size:13px">Order lines</h3>
+        <div id="po-items"></div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="po-save">Place Order</button></div>`);
+    const redraw = () => lineItemEditor($('#po-items'), items, { withPrice: false });
+    redraw();
+    $('#po-mat').onchange = e => {
+      const m = materials.find(x => x.id === +e.target.value);
+      if (m) { items.push({ material_id: m.id, desc: m.name, qty: Math.max(1, Math.ceil(m.reorder_point * 1.5 - m.qty_on_hand)), unit: m.unit, unit_cost: m.unit_cost }); redraw(); }
+      e.target.value = '';
+    };
+    $('#po-save').onclick = async () => {
+      const f = formData($('#po-form'));
+      if (!f.vendor) return toast('Vendor is required', 'err');
+      if (!items.filter(i => i.desc).length) return toast('Add at least one line', 'err');
+      f.items = items.filter(i => i.desc);
+      f.po_number = numbers.po; f.status = 'ordered';
+      await api('purchaseorders', 'POST', f);
+      closeModal(); toast(`PO ${numbers.po} placed`, 'ok'); route();
+    };
+  };
+};
+
+// ---------------------------------------------------------------- ARCHIVE & PROFIT SEARCH
+PAGES.archive = async (param) => {
+  const q = param ? decodeURIComponent(param) : '';
+  view.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="global-search" style="width:100%;max-width:640px">
+        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+        <input id="arc-q" placeholder="Search anything — client, item, work order #, 'railing', 'door frames'…" value="${esc(q)}">
+      </div>
+      <p class="muted" style="margin-top:10px;font-size:12.5px">Searches every job, work order and quote — including line items — and shows what you sold it for, what it cost, and whether you profited. Click a result to see the items.</p>
+    </div>
+    <div id="arc-results"><div class="empty">Searching…</div></div>`;
+
+  $('#arc-q').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { location.hash = '#/archive/' + encodeURIComponent(e.target.value.trim()); }
+  });
+
+  const results = await api('search?q=' + encodeURIComponent(q));
+  const wrap = $('#arc-results');
+  if (!wrap) return;
+  wrap.innerHTML = results.length ? results.map(r => `
+    <div class="result-item">
+      <div class="result-head">
+        <span class="rtype ${r.type}">${r.type.replace('_', ' ')}</span>
+        <span class="rnum">${esc(r.number)}</span>
+        <span class="strong">${esc(r.title)}</span>
+        <span class="muted">· ${esc(r.client || '—')} · ${esc(r.date)}</span>
+        ${badge(r.status)}
+        <div class="result-fin">
+          <div><span class="muted">Sold</span><b>${money0(r.sold_price)}</b></div>
+          <div><span class="muted">Cost</span><b>${money0(r.total_cost)}</b></div>
+          <div><span class="muted">Profit</span><b class="${r.profit >= 0 ? 'pos' : 'neg'}">${money0(r.profit)} (${r.margin_pct}%)</b></div>
+        </div>
+      </div>
+      <div class="result-items">
+        ${r.items && r.items.length ? `<table class="tbl"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Unit price</th></tr></thead><tbody>
+          ${r.items.map(i => `<tr><td>${esc(i.desc)}</td><td class="num">${i.qty ?? ''}</td><td class="num">${i.unit_cost != null ? money(i.unit_cost) : '—'}</td><td class="num">${i.unit_price != null ? money(i.unit_price) : '—'}</td></tr>`).join('')}
+        </tbody></table>` : '<span class="muted">No line items recorded.</span>'}
+      </div>
+    </div>`).join('') : `<div class="empty">Nothing found for “${esc(q)}”.</div>`;
+  wrap.onclick = e => {
+    const item = e.target.closest('.result-item');
+    if (item && !e.target.closest('.result-items')) item.classList.toggle('open');
+  };
+};
+
+// ---------------------------------------------------------------- AI INSIGHTS
+PAGES.insights = async () => {
+  const insights = await api('insights');
+  view.innerHTML = `
+    <div class="card" style="margin-bottom:16px;background:linear-gradient(120deg,#131c26,#24344a);color:#fff;border:0">
+      <h3 style="color:#f5a524">Foreman's Briefing</h3>
+      <p style="font-size:13px;line-height:1.6;color:#cfd8e3">The assistant watches your margins, stock levels, shop queue and outstanding quotes, then flags what needs attention — highest priority first. Numbers update live as the crew clocks time and materials get logged.</p>
+    </div>
+    ${insights.length ? insights.map(i => `
+      <div class="insight">
+        <div class="sev ${esc(i.severity)}"></div>
+        <div><h4>${esc(i.title)}</h4><p>${esc(i.detail)}</p></div>
+      </div>`).join('') : '<div class="empty">All clear — nothing needs attention right now.</div>'}`;
+};
+
+// ---------------------------------------------------------------- CLIENTS
+PAGES.clients = async () => {
+  const clients = await api('clients');
+  view.innerHTML = `
+    <div class="toolbar"><span></span><button class="btn primary" id="c-new">+ Add Client</button></div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Client</th><th>Contact</th><th>Phone</th><th>Email</th><th>Address</th><th></th>
+    </tr></thead><tbody>
+      ${clients.map(c => `<tr>
+        <td class="strong">${esc(c.name)}</td><td>${esc(c.contact)}</td>
+        <td class="mono">${esc(c.phone)}</td><td>${esc(c.email)}</td><td class="muted">${esc(c.address)}</td>
+        <td><button class="btn sm ghost" data-edit="${c.id}">Edit</button></td>
+      </tr>`).join('')}
+    </tbody></table></div>`;
+  $('#c-new').onclick = () => cModal();
+  view.onclick = e => { if (e.target.dataset.edit) cModal(clients.find(c => c.id === +e.target.dataset.edit)); };
+  function cModal(c) {
+    openModal(`
+      <div class="modal-head"><h2>${c ? 'Edit Client' : 'Add Client'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="c-form" class="form-grid">
+        <label class="fld full">Company / name<input name="name" required value="${esc(c?.name || '')}"></label>
+        <label class="fld">Contact person<input name="contact" value="${esc(c?.contact || '')}"></label>
+        <label class="fld">Phone<input name="phone" value="${esc(c?.phone || '')}"></label>
+        <label class="fld full">Email<input name="email" value="${esc(c?.email || '')}"></label>
+        <label class="fld full">Address<input name="address" value="${esc(c?.address || '')}"></label>
+        <label class="fld full">Notes<textarea name="notes">${esc(c?.notes || '')}</textarea></label>
+      </form></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="c-save">Save</button></div>`, { narrow: true });
+    $('#c-save').onclick = async () => {
+      const f = formData($('#c-form'));
+      if (!f.name) return toast('Name is required', 'err');
+      if (c) await api('clients/' + c.id, 'PUT', f); else await api('clients', 'POST', f);
+      closeModal(); toast('Client saved', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- TEAM
+PAGES.team = async () => {
+  const employees = await api('employees');
+  view.innerHTML = `
+    <div class="toolbar"><span class="muted">PINs are what the crew punches into the time clock.</span><button class="btn primary" id="e-new">+ Add Employee</button></div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Name</th><th>Role</th><th>Phone</th><th class="num">Rate $/hr</th><th>PIN</th><th>Status</th><th></th>
+    </tr></thead><tbody>
+      ${employees.map(e => `<tr>
+        <td class="strong">${esc(e.name)}</td><td>${esc(e.role)}</td><td class="mono">${esc(e.phone)}</td>
+        <td class="num">${money(e.hourly_rate)}</td><td class="mono">${esc(e.pin)}</td>
+        <td>${e.active ? badge('in').replace('In', 'Active') : badge('out').replace('Out', 'Inactive')}</td>
+        <td><button class="btn sm ghost" data-edit="${e.id}">Edit</button></td>
+      </tr>`).join('')}
+    </tbody></table></div>`;
+  $('#e-new').onclick = () => eModal();
+  view.onclick = e => { if (e.target.dataset.edit) eModal(employees.find(x => x.id === +e.target.dataset.edit)); };
+  function eModal(emp) {
+    openModal(`
+      <div class="modal-head"><h2>${emp ? 'Edit ' + esc(emp.name) : 'Add Employee'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="e-form" class="form-grid">
+        <label class="fld full">Name<input name="name" required value="${esc(emp?.name || '')}"></label>
+        <label class="fld">Role<input name="role" value="${esc(emp?.role || 'Crew')}"></label>
+        <label class="fld">Phone<input name="phone" value="${esc(emp?.phone || '')}"></label>
+        <label class="fld">Hourly rate $<input name="hourly_rate" type="number" step="any" value="${emp?.hourly_rate ?? 25}"></label>
+        <label class="fld">Time clock PIN<input name="pin" value="${esc(emp?.pin || '')}" maxlength="6"></label>
+        <label class="fld">Active<select name="active"><option value="1" ${!emp || emp.active ? 'selected' : ''}>Yes</option><option value="0" ${emp && !emp.active ? 'selected' : ''}>No</option></select></label>
+      </form></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="e-save">Save</button></div>`, { narrow: true });
+    $('#e-save').onclick = async () => {
+      const f = formData($('#e-form'));
+      if (!f.name) return toast('Name is required', 'err');
+      f.active = Number(f.active);
+      if (emp) await api('employees/' + emp.id, 'PUT', f); else await api('employees', 'POST', f);
+      closeModal(); toast('Employee saved', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- FIELD JOB CARDS
+PAGES.jobcards = async () => {
+  const cards = await api('jobcards');
+  const pending = cards.filter(c => c.status === 'submitted');
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters" id="jc-filters">
+        <span class="chip active" data-f="submitted">Awaiting review (${pending.length})</span>
+        <span class="chip" data-f="approved">Approved</span>
+        <span class="chip" data-f="all">All</span>
+      </div>
+      <span class="muted">Crew submit these from the field portal at the end of the day.</span>
+    </div>
+    <div id="jc-list"></div>`;
+
+  function render(filter) {
+    const rows = cards.filter(c => filter === 'all' || c.status === filter);
+    $('#jc-list').innerHTML = rows.length ? rows.map(c => `
+      <div class="jobcard ${c.status === 'approved' ? 'approved' : ''}">
+        <div class="jc-head">
+          <span class="strong">${esc(c.employee_name)}</span>
+          <span class="muted">${esc(c.work_date)}</span>
+          ${c.job_number ? `<span class="mono strong">${esc(c.job_number)}</span> <span class="muted">${esc(c.job_title || '')}</span>` : '<span class="muted">Shop / no job</span>'}
+          <span class="badge b-${c.status === 'approved' ? 'accepted' : 'sent'}">${esc(cap(c.status))}</span>
+          <span class="mono" style="margin-left:auto">${c.hours} hrs</span>
+          ${c.status === 'submitted' ? `<button class="btn sm green" data-ok="${c.id}">Approve</button>` : ''}
+        </div>
+        <div class="jc-body">${esc(c.work_performed)}</div>
+        ${c.materials_used ? `<div class="jc-field"><b>Materials:</b> ${esc(c.materials_used)}</div>` : ''}
+        ${c.issues ? `<div class="jc-issue"><b>⚠ Flagged:</b> ${esc(c.issues)}</div>` : ''}
+      </div>`).join('') : '<div class="empty">Nothing here.</div>';
+  }
+  render('submitted');
+  $('#jc-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#jc-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); render(c.dataset.f);
+  };
+  $('#jc-list').onclick = async e => {
+    if (e.target.dataset.ok) {
+      await api(`jobcards/${e.target.dataset.ok}/approve`, 'POST', {});
+      toast('Job card approved', 'ok'); route();
+    }
+  };
+};
+
+// ---------------------------------------------------------------- shared: email a customer document
+async function docEmailModal({ kind, endpoint, doc, number, title, total, email, contact, defaultMessage, accent = 'primary' }) {
+  const cfg = await api('settings');
+  const configured = !!cfg.smtp_host;
+  const greeting = contact ? contact.split(' ')[0] : '';
+  openModal(`
+    <div class="modal-head"><h2>Email ${esc(kind)} ${esc(number)}</h2><button class="modal-close">×</button></div>
+    <div class="modal-body">
+      ${configured ? '' : `<div class="hr-note"><b>SMTP is not set up yet.</b> Sending now saves a full preview of the customer's email to the outbox instead of delivering it. Add your mail server under <a class="plain" href="#/settings">Settings → Email</a>.</div>`}
+      <form id="dm-form" class="form-grid">
+        <label class="fld full">To<input name="to" value="${esc(email || '')}" placeholder="customer@company.com" required></label>
+        <label class="fld full">Subject<input name="subject" value="${esc(title)}"></label>
+        <label class="fld full">Message<textarea name="message" style="min-height:120px">${esc(defaultMessage.replace('{name}', greeting ? ' ' + greeting : ''))}</textarea></label>
+      </form>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">The full ${esc(kind.toLowerCase())} (${money(total)}) is included in the email automatically, with a secure link the customer can open on any device.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="dm-link" style="margin-right:auto">Just get the link</button>
+      <button class="btn ghost modal-close">Cancel</button>
+      <button class="btn ${accent}" id="dm-send">${configured ? 'Send' : 'Generate Preview'}</button>
+    </div>`);
+
+  $('#dm-link').onclick = async () => {
+    const r = await api(`${endpoint}/${doc.id}/link`, 'POST', {});
+    $('.modal-body').insertAdjacentHTML('beforeend', `
+      <div class="copybox"><input value="${esc(r.link)}" readonly onclick="this.select()">
+      <button class="btn sm ghost" onclick="navigator.clipboard.writeText('${esc(r.link)}');this.textContent='Copied'">Copy</button></div>`);
+  };
+  $('#dm-send').onclick = async () => {
+    const btn = $('#dm-send'); btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const r = await api(`${endpoint}/${doc.id}/email`, 'POST', formData($('#dm-form')));
+      closeModal(); toast(r.message, r.status === 'sent' ? 'ok' : '');
+      if (r.preview) window.open(r.preview, '_blank');
+      route();
+    } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = configured ? 'Send' : 'Generate Preview'; }
+  };
+}
+
+// ---------------------------------------------------------------- CHANGE ORDERS
+PAGES.changeorders = async () => {
+  const [cos, jobs, clients, numbers, settings] = await Promise.all([
+    api('changeorders'), api('jobs'), api('clients'), api('numbers'), api('settings'),
+  ]);
+  const pending = cos.filter(c => c.status === 'sent');
+  const approvedTotal = cos.filter(c => c.status === 'approved').reduce((s, c) => s + c.totals.total, 0);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Approved &amp; Under Contract</div><div class="kpi-value">${money0(approvedTotal)}</div><div class="kpi-note">${cos.filter(c => c.status === 'approved').length} signed change orders</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Awaiting Signature</div><div class="kpi-value">${money0(pending.reduce((s, c) => s + c.totals.total, 0))}</div><div class="kpi-note">${pending.length} out with customers — do not build these yet</div></div>
+      <div class="kpi" style="--kpi-accent:#8496aa"><div class="kpi-label">Drafts</div><div class="kpi-value">${cos.filter(c => c.status === 'draft').length}</div><div class="kpi-note">not sent to anyone yet</div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Schedule Impact</div><div class="kpi-value">${cos.filter(c => c.status === 'approved').reduce((s, c) => s + (c.schedule_days || 0), 0)} d</div><div class="kpi-note">added by approved changes</div></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="filters" id="co-filters">
+        ${['all', 'draft', 'sent', 'approved', 'declined'].map(s => `<span class="chip ${s === 'all' ? 'active' : ''}" data-f="${s}">${cap(s)}</span>`).join('')}
+      </div>
+      <button class="btn primary" id="co-new">+ New Change Order</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>CO #</th><th>Job</th><th>What changed</th><th>Reason</th><th class="num">Amount</th><th class="num">Days</th><th>Status</th><th></th>
+    </tr></thead><tbody id="co-body"></tbody></table></div>`;
+
+  function render(filter) {
+    const rows = cos.filter(c => filter === 'all' || c.status === filter);
+    $('#co-body').innerHTML = rows.length ? rows.map(c => `
+      <tr>
+        <td class="mono strong">${esc(c.co_number)}</td>
+        <td><span class="mono">${esc(c.job_number || '')}</span><div class="muted" style="font-size:11.5px">${esc(c.client_name || '')}</div></td>
+        <td>${esc(c.title)}</td>
+        <td class="muted">${esc(cap(c.reason || '—'))}</td>
+        <td class="num strong">${money(c.totals.total)}</td>
+        <td class="num muted">${c.schedule_days || 0}</td>
+        <td>${badge(c.status)}
+          ${c.client_signature ? `<div class="muted" style="font-size:11px;margin-top:2px">✓ ${esc(c.client_signature)}${c.approved_revision ? ` (rev ${c.approved_revision})` : ''}</div>` : ''}
+          ${c.has_drift ? '<div class="drift" title="The customer\'s copy is out of date">edited since sent</div>' : ''}
+        </td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${c.id}">Edit</button>
+          ${c.status === 'draft' || c.status === 'sent' ? `<button class="btn sm" data-mail="${c.id}">✉ ${c.status === 'sent' ? 'Resend' : 'Send'}</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="8"><div class="empty">No change orders here.</div></td></tr>';
+  }
+  render('all');
+  $('#co-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#co-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); render(c.dataset.f);
+  };
+  $('#co-new').onclick = () => coModal();
+  $('#co-body').onclick = e => {
+    if (e.target.dataset.edit) return coModal(cos.find(c => c.id === +e.target.dataset.edit));
+    if (e.target.dataset.mail) {
+      const c = cos.find(x => x.id === +e.target.dataset.mail);
+      docEmailModal({ kind: 'Change Order', endpoint: 'changeorders', doc: c, number: c.co_number,
+        title: `Change Order ${c.co_number}: ${c.title}`, total: c.totals.total,
+        email: c.client_email, contact: c.client_contact,
+        defaultMessage: `Hi{name},\n\nWe ran into work outside the original scope on ${c.job_number}. Details and pricing are below — we need your approval before we proceed.\n\nThanks,\n${ME.name}` });
+    }
+  };
+
+  window.coModalFor = coModal;   // reachable from the job card page
+  function coModal(co, presetJobId, presetCard) {
+    const items = co ? JSON.parse(co.items || '[]') : [];
+    openModal(`
+      <div class="modal-head"><h2>${co ? 'Edit ' + esc(co.co_number) : 'New Change Order ' + esc(numbers.co)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <form id="co-form" class="form-grid">
+          <label class="fld">Job<select name="job_id" required>
+            ${jobs.filter(j => j.status !== 'completed' || (co && co.job_id === j.id)).map(j =>
+              `<option value="${j.id}" ${(co ? co.job_id === j.id : presetJobId === j.id) ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}
+          </select></label>
+          <label class="fld">Reason<select name="reason">
+            ${['client request', 'unforeseen condition', 'design change', 'code requirement', 'other']
+              .map(r => `<option ${co && co.reason === r ? 'selected' : ''}>${r}</option>`).join('')}
+          </select></label>
+          <label class="fld full">Title<input name="title" required value="${esc(co?.title || '')}" placeholder="e.g. Reroute irrigation line at footings"></label>
+          <label class="fld full">What changed and why<textarea name="description">${esc(co?.description || presetCard?.issues || '')}</textarea></label>
+          <label class="fld">Labor hours<input name="labor_hours" type="number" step="any" value="${co?.labor_hours ?? 0}"></label>
+          <label class="fld">Labor rate $/hr<input name="labor_rate" type="number" step="any" value="${co?.labor_rate ?? settings.default_labor_rate ?? 65}"></label>
+          <label class="fld">Markup %<input name="markup_pct" type="number" step="any" value="${co?.markup_pct ?? 10}"></label>
+          <label class="fld">Tax %<input name="tax_pct" type="number" step="any" value="${co?.tax_pct ?? settings.default_tax_pct ?? 0}"></label>
+          <label class="fld">Calendar days added<input name="schedule_days" type="number" step="any" value="${co?.schedule_days ?? 0}"></label>
+          <label class="fld">Status<select name="status">${['draft', 'sent', 'approved', 'declined'].map(s => `<option value="${s}" ${co && co.status === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+        </form>
+        <h3 style="margin:16px 0 4px;font-size:13px">Added scope</h3>
+        <div id="co-items"></div>
+        <div class="quote-summary" id="co-summary"></div>
+      </div>
+      <div class="modal-foot">
+        ${co ? '<button class="btn danger" id="co-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="co-save">${co ? 'Save' : 'Create Change Order'}</button>
+      </div>`);
+
+    const summary = () => {
+      const f = formData($('#co-form'));
+      const t = calcQuote(items, f.labor_hours, f.labor_rate, f.markup_pct, f.tax_pct);
+      $('#co-summary').innerHTML = `
+        <div>Materials<b>${money(t.materials)}</b></div>
+        <div>Labor<b>${money(t.labor)}</b></div>
+        <div>Markup<b>${money(t.markup)}</b></div>
+        <div>Tax<b>${money(t.tax)}</b></div>
+        <div class="grand">Change order total<b>${money(t.total)}</b></div>`;
+    };
+    lineItemEditor($('#co-items'), items, { onChange: summary });
+    $('#co-form').addEventListener('input', summary);
+    summary();
+
+    $('#co-save').onclick = async () => {
+      const f = formData($('#co-form'));
+      if (!f.title) return toast('Title is required', 'err');
+      f.items = items.filter(i => i.desc);
+      const job = jobs.find(j => j.id === +f.job_id);
+      f.client_id = job ? job.client_id : null;
+      if (presetCard) f.source_card_id = presetCard.id;
+      try {
+        if (co) await api('changeorders/' + co.id, 'PUT', f);
+        else { f.co_number = numbers.co; await api('changeorders', 'POST', f); }
+        closeModal(); toast('Change order saved', 'ok'); location.hash = '#/changeorders'; route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    if (co) $('#co-del').onclick = async () => {
+      if (!confirm(`Delete ${co.co_number}?`)) return;
+      await api('changeorders/' + co.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- INVOICES & AR
+PAGES.invoices = async () => {
+  const [invoices, aging, jobs, clients, numbers, settings] = await Promise.all([
+    api('invoices'), api('invoices/aging'), api('jobs'), api('clients'), api('numbers'), api('settings'),
+  ]);
+  const b = aging.buckets;
+  const maxBucket = Math.max(...Object.values(b), 1);
+  const bucketLabels = { current: 'Not yet due', d1_30: '1–30 days', d31_60: '31–60 days', d61_90: '61–90 days', d90_plus: '90+ days' };
+  const bucketColors = { current: '#2e9e6b', d1_30: '#f5a524', d31_60: '#e8833a', d61_90: '#d64545', d90_plus: '#a02020' };
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Outstanding</div><div class="kpi-value">${money0(aging.total_outstanding)}</div><div class="kpi-note">${aging.open.length} unpaid invoices</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Past Due</div><div class="kpi-value neg">${money0(aging.open.filter(o => o.days_overdue > 0).reduce((s, o) => s + o.balance, 0))}</div><div class="kpi-note">${aging.open.filter(o => o.days_overdue > 0).length} invoices overdue</div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Retainage Held</div><div class="kpi-value">${money0(aging.retainage_held)}</div><div class="kpi-note">billable at closeout</div></div>
+      <div class="kpi" style="--kpi-accent:#8496aa"><div class="kpi-label">Drafts</div><div class="kpi-value">${invoices.filter(i => i.status === 'draft').length}</div><div class="kpi-note">unsent — cannot be paid</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>Receivables Aging</h3>
+        ${Object.entries(b).map(([k, v]) => `
+          <div class="bar-row">
+            <span class="lbl">${bucketLabels[k]}</span>
+            <span class="track"><i style="width:${Math.round(v / maxBucket * 100)}%;background:${bucketColors[k]}"></i></span>
+            <span class="val">${money0(v)}</span>
+          </div>`).join('')}
+        <p class="muted" style="font-size:12.5px;margin-top:12px">Anything past 60 days needs a phone call, not another emailed copy.</p>
+      </div>
+      <div class="card">
+        <h3>Oldest Unpaid</h3>
+        ${aging.open.length ? `<table class="tbl"><thead><tr><th>Invoice</th><th>Client</th><th>Due</th><th class="num">Balance</th></tr></thead><tbody>
+          ${aging.open.slice(0, 8).map(o => `<tr>
+            <td class="mono strong">${esc(o.invoice_number)}</td>
+            <td class="muted">${esc(o.client || '')}</td>
+            <td class="mono ${o.days_overdue > 0 ? 'neg' : 'muted'}">${esc(o.due_date || '—')}${o.days_overdue > 0 ? ` (+${o.days_overdue}d)` : ''}</td>
+            <td class="num strong">${money(o.balance)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">Nothing outstanding — everyone has paid.</div>'}
+      </div>
+    </div>
+
+    <div class="toolbar section-gap">
+      <div class="filters" id="inv-filters">
+        ${['all', 'draft', 'sent', 'paid'].map(s => `<span class="chip ${s === 'all' ? 'active' : ''}" data-f="${s}">${cap(s)}</span>`).join('')}
+      </div>
+      <div>
+        <button class="btn ghost" id="inv-progress">Bill a job by % complete</button>
+        <button class="btn primary" id="inv-new">+ New Invoice</button>
+      </div>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Invoice</th><th>Client / Job</th><th>Type</th><th>Issued</th><th>Due</th>
+      <th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th>
+    </tr></thead><tbody id="inv-body"></tbody></table></div>`;
+
+  function render(filter) {
+    const rows = invoices.filter(i => filter === 'all' || i.status === filter);
+    $('#inv-body').innerHTML = rows.length ? rows.map(i => `
+      <tr>
+        <td class="mono strong">${esc(i.invoice_number)}</td>
+        <td>${esc(i.client_name || '—')}${i.job_number ? `<div class="muted" style="font-size:11.5px">${esc(i.job_number)}</div>` : ''}</td>
+        <td class="muted">${esc(cap(i.invoice_type))}</td>
+        <td class="mono muted">${esc(i.issue_date || '—')}</td>
+        <td class="mono ${i.days_overdue > 0 ? 'neg' : 'muted'}">${esc(i.due_date || '—')}${i.days_overdue > 0 ? ` +${i.days_overdue}d` : ''}</td>
+        <td class="num">${money(i.totals.total)}</td>
+        <td class="num pos">${i.totals.paid ? money(i.totals.paid) : '—'}</td>
+        <td class="num strong ${i.totals.balance > 0 ? (i.days_overdue > 0 ? 'neg' : '') : 'pos'}">${money(i.totals.balance)}</td>
+        <td>${badge(i.status)}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${i.id}">Open</button>
+          <button class="btn sm" data-mail="${i.id}">✉</button>
+          ${i.totals.balance > 0 ? `<button class="btn sm green" data-pay="${i.id}">Payment</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="10"><div class="empty">No invoices here.</div></td></tr>';
+  }
+  render('all');
+  $('#inv-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#inv-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); render(c.dataset.f);
+  };
+  $('#inv-new').onclick = () => invModal();
+  $('#inv-progress').onclick = () => progressModal();
+  $('#inv-body').onclick = e => {
+    const inv = id => invoices.find(x => x.id === +id);
+    if (e.target.dataset.edit) return invModal(inv(e.target.dataset.edit));
+    if (e.target.dataset.pay) return payModal(inv(e.target.dataset.pay));
+    if (e.target.dataset.mail) {
+      const i = inv(e.target.dataset.mail);
+      docEmailModal({ kind: 'Invoice', endpoint: 'invoices', doc: i, number: i.invoice_number,
+        title: `Invoice ${i.invoice_number}`, total: i.totals.balance, email: i.client_email, contact: i.client_contact,
+        defaultMessage: `Hi{name},\n\nInvoice ${i.invoice_number} is below${i.due_date ? `, due ${i.due_date}` : ''}. Thank you for your business.\n\n${ME.name}`,
+        accent: 'green' });
+    }
+  };
+
+  function progressModal() {
+    const open = jobs.filter(j => j.status !== 'completed' || j.financials.invoicing.billed < j.financials.sold_price);
+    openModal(`
+      <div class="modal-head"><h2>Bill a job by percent complete</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:14px;font-size:13px">Pick a job and how far along it is. We'll bill the difference between that percentage of the contract and what you have already invoiced.</p>
+        <form id="pg-form" class="form-grid">
+          <label class="fld full">Job<select name="job_id" id="pg-job">
+            ${open.map(j => `<option value="${j.id}">${esc(j.job_number)} — ${esc(j.title)} (${money0(j.financials.sold_price)} contract, ${money0(j.financials.invoicing.billed)} billed)</option>`).join('')}
+          </select></label>
+          <label class="fld">Percent complete<input name="percent_complete" type="number" min="0" max="100" value="50"></label>
+          <label class="fld">Retainage %<input name="retainage_pct" type="number" step="any" value="${settings.default_retainage_pct || 0}"></label>
+          <label class="fld">Tax %<input name="tax_pct" type="number" step="any" value="0"></label>
+          <label class="fld">Terms (days)<input name="terms_days" type="number" value="${settings.payment_terms_days || 30}"></label>
+        </form>
+        <div id="pg-preview" class="quote-summary"></div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="pg-go">Create Draft Invoice</button></div>`, { narrow: true });
+
+    const preview = () => {
+      const f = formData($('#pg-form'));
+      const j = jobs.find(x => x.id === +f.job_id);
+      if (!j) return;
+      const gross = j.financials.sold_price * (Number(f.percent_complete) || 0) / 100;
+      const thisBill = Math.max(0, gross - j.financials.invoicing.billed);
+      const ret = thisBill * (Number(f.retainage_pct) || 0) / 100;
+      $('#pg-preview').innerHTML = `
+        <div>Contract<b>${money(j.financials.sold_price)}</b></div>
+        <div>Already billed<b>${money(j.financials.invoicing.billed)}</b></div>
+        <div>Less retainage<b>${money(ret)}</b></div>
+        <div class="grand">This invoice<b>${money(thisBill - ret)}</b></div>`;
+    };
+    $('#pg-form').addEventListener('input', preview);
+    preview();
+
+    $('#pg-go').onclick = async () => {
+      const f = formData($('#pg-form'));
+      try {
+        const r = await api(`invoices/${f.job_id}/generate`, 'POST', f);
+        closeModal(); toast(`${r.invoice_number} drafted for ${money(r.amount)}`, 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
+  function payModal(inv) {
+    openModal(`
+      <div class="modal-head"><h2>Record payment — ${esc(inv.invoice_number)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:14px">${esc(inv.client_name || '')} owes <b class="strong">${money(inv.totals.balance)}</b> of ${money(inv.totals.total)}.</p>
+        <form id="pay-form" class="form-grid">
+          <label class="fld">Amount $<input name="amount" type="number" step="any" value="${inv.totals.balance}" required></label>
+          <label class="fld">Received on<input name="received_on" type="date" value="${todayStr()}"></label>
+          <label class="fld">Method<select name="method">${['check', 'ach', 'card', 'cash', 'other'].map(m => `<option value="${m}">${m.toUpperCase()}</option>`).join('')}</select></label>
+          <label class="fld">Reference<input name="reference" placeholder="check # / confirmation"></label>
+          <label class="fld full">Notes<input name="notes"></label>
+        </form>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn green" id="pay-save">Record Payment</button></div>`, { narrow: true });
+    $('#pay-save').onclick = async () => {
+      try {
+        const r = await api(`invoices/${inv.id}/payments`, 'POST', formData($('#pay-form')));
+        closeModal();
+        toast(r.paid_in_full ? 'Paid in full — nice' : `Payment recorded, ${money(r.balance)} still open`, 'ok');
+        route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
+  function invModal(inv) {
+    const items = inv ? JSON.parse(inv.items || '[]') : [];
+    const payments = inv ? null : [];
+    openModal(`
+      <div class="modal-head"><h2>${inv ? esc(inv.invoice_number) : 'New Invoice ' + esc(numbers.invoice)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <form id="iv-form" class="form-grid">
+          <label class="fld">Client<select name="client_id">${clients.map(c => `<option value="${c.id}" ${inv && inv.client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+          <label class="fld">Job<select name="job_id"><option value="">— none —</option>${jobs.map(j => `<option value="${j.id}" ${inv && inv.job_id === j.id ? 'selected' : ''}>${esc(j.job_number)} ${esc(j.title)}</option>`).join('')}</select></label>
+          <label class="fld">Type<select name="invoice_type">${['deposit', 'progress', 'final'].map(t => `<option value="${t}" ${inv && inv.invoice_type === t ? 'selected' : ''}>${cap(t)}</option>`).join('')}</select></label>
+          <label class="fld">Status<select name="status">${['draft', 'sent', 'paid', 'void'].map(s => `<option value="${s}" ${inv && inv.status === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+          <label class="fld full">Description<input name="description" value="${esc(inv?.description || '')}" placeholder="e.g. Progress billing #2 — drywall complete"></label>
+          <label class="fld">Issue date<input name="issue_date" type="date" value="${esc(inv?.issue_date || todayStr())}"></label>
+          <label class="fld">Due date<input name="due_date" type="date" value="${esc(inv?.due_date || '')}"></label>
+          <label class="fld">Terms (days)<input name="terms_days" type="number" value="${inv?.terms_days ?? settings.payment_terms_days ?? 30}"></label>
+          <label class="fld">Retainage %<input name="retainage_pct" type="number" step="any" value="${inv?.retainage_pct ?? 0}"></label>
+          <label class="fld">Tax %<input name="tax_pct" type="number" step="any" value="${inv?.tax_pct ?? 0}"></label>
+          <label class="fld full">Notes shown to the customer<textarea name="notes">${esc(inv?.notes || '')}</textarea></label>
+        </form>
+        <h3 style="margin:16px 0 4px;font-size:13px">Line items</h3>
+        <div id="iv-items"></div>
+        <div class="quote-summary" id="iv-summary"></div>
+        ${inv && inv.totals.paid ? `<div class="hr-note" style="margin-top:12px">${money(inv.totals.paid)} in payments has been applied to this invoice.</div>` : ''}
+      </div>
+      <div class="modal-foot">
+        ${inv ? '<button class="btn danger" id="iv-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="iv-save">Save</button>
+      </div>`);
+
+    const summary = () => {
+      const f = formData($('#iv-form'));
+      const sub = items.reduce((s, i) => s + (i.qty || 0) * (i.unit_price || 0), 0);
+      const tax = sub * (Number(f.tax_pct) || 0) / 100;
+      const ret = (sub + tax) * (Number(f.retainage_pct) || 0) / 100;
+      $('#iv-summary').innerHTML = `
+        <div>Subtotal<b>${money(sub)}</b></div>
+        <div>Tax<b>${money(tax)}</b></div>
+        <div>Retainage held<b>−${money(ret)}</b></div>
+        <div class="grand">Invoice total<b>${money(sub + tax - ret)}</b></div>`;
+    };
+    lineItemEditor($('#iv-items'), items, { onChange: summary });
+    $('#iv-form').addEventListener('input', summary);
+    summary();
+
+    $('#iv-save').onclick = async () => {
+      const f = formData($('#iv-form'));
+      f.items = items.filter(i => i.desc);
+      if (!f.items.length) return toast('Add at least one line item', 'err');
+      if (!f.due_date && f.issue_date) {
+        const d = new Date(f.issue_date + 'T12:00'); d.setDate(d.getDate() + (Number(f.terms_days) || 0));
+        f.due_date = d.toISOString().slice(0, 10);
+      }
+      try {
+        if (inv) await api('invoices/' + inv.id, 'PUT', f);
+        else { f.invoice_number = numbers.invoice; await api('invoices', 'POST', f); }
+        closeModal(); toast('Invoice saved', 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    if (inv) $('#iv-del').onclick = async () => {
+      if (!confirm(`Delete ${inv.invoice_number}? Payments recorded against it stay in the ledger.`)) return;
+      await api('invoices/' + inv.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
+    };
+  }
+};
+
+const round1 = n => Math.round((Number(n) || 0) * 10) / 10;
+
+// ---------------------------------------------------------------- SHOP CONSUMPTION
+/**
+ * Duct calculator.
+ *
+ * The grid in the workbook only ever showed one gauge. This shows every
+ * combination, priced from the shop's own rates, with the metal, the labor
+ * and the liner separated so an estimator can see where the money is before
+ * the number goes on a proposal.
+ */
+PAGES.duct = async () => {
+  const d = await api('duct');
+  const fittings = d.fittings || [];
+  const m = d.ok ? d.model : null;
+  if (!m && !fittings.length) {
+    view.innerHTML = `<div class="card"><div class="empty" style="padding:40px 20px">No price book loaded for this company.</div></div>`;
+    return;
+  }
+  const clients = await api('clients');
+
+  const girths = m ? [...new Set(d.sizes.map(s => s.girth))].sort((a, b) => a - b) : [];
+  const lengths = m ? [...new Set(d.sizes.map(s => s.length))].sort((a, b) => a - b) : [];
+  const gauges = m ? Object.keys(m.steel_per_sqft).sort((a, b) => b - a) : [];
+  const liners = m ? Object.keys(m.liner_per_sqft).sort((a, b) => a - b) : [];
+
+  // What you can put on a quote. Duct is computed; the rest are your own tables.
+  const ells = d.ells, trans = d.transitions;
+  const KINDS = [
+    ...(m ? [{ id: 'duct', label: 'Duct / register tap', note: 'any gauge', group: 'Ductwork' }] : []),
+    ...(ells ? [{ id: 'ell', label: ells.name, note: `${ells.combos.length} sizes`, group: 'Ductwork' }] : []),
+    ...(trans ? [{ id: 'trans', label: 'Transition', note: 'any two openings', group: 'Ductwork' }] : []),
+    ...fittings.map((f, i) => ({ id: 'f' + i, label: f.name, note: `${f.sizes.length} sizes`,
+      group: f.group || 'Ductwork', fitting: f })),
+  ];
+  // Chimney saddles are roof work. Mixed into the duct list they are just
+  // noise an estimator has to learn to scroll past.
+  const GROUPS = [...new Set(KINDS.map(k => k.group))];
+  const ellW = ells ? [...new Set(ells.combos.map(c => c.w))].sort((a, b) => a - b) : [];
+
+  const cart = [];
+  let kind = KINDS[0].id;
+
+  view.innerHTML = `
+    <div class="grid grid-2">
+      <div>
+        <div class="card">
+          <h3>What are you quoting?</h3>
+          <div id="kind-pick">
+            ${GROUPS.map(g => `
+              ${GROUPS.length > 1 ? `<div class="kind-group">${esc(g)}</div>` : ''}
+              <div class="kind-pick">
+                ${KINDS.filter(k => k.group === g).map(k => `<button class="kind ${k.id === kind ? 'on' : ''}" data-kind="${k.id}">
+                  <b>${esc(k.label)}</b><span>${esc(k.note)}</span></button>`).join('')}
+              </div>`).join('')}
+          </div>
+          <div id="pick-form"></div>
+          <div id="pick-price"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h3>This quote <span class="hint" id="cart-count">nothing yet</span></h3>
+          <div id="cart"></div>
+          <div id="cart-foot"></div>
+        </div>
+      </div>
+    </div>`;
+
+  const K = () => KINDS.find(k => k.id === kind);
+
+  function renderPicker() {
+    const k = K();
+    $$('.kind').forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
+    const ellHeights = w => ells.combos.filter(c => c.w === w).map(c => c.h).sort((a, b) => a - b);
+    $('#pick-form').innerHTML = k.id === 'ell'
+      ? `<form id="pf" class="form-grid">
+           <label class="fld">Width<select name="w">${ellW.map(w => `<option>${w}"</option>`).join('')}</select></label>
+           <label class="fld">Height<select name="h">${ellHeights(ellW[0]).map(h => `<option>${h}"</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`
+      : k.id === 'trans'
+      ? `<form id="pf" class="form-grid">
+           <label class="fld">Width in<input name="width_in" type="number" step="any" value="36"></label>
+           <label class="fld">Depth in<input name="depth_in" type="number" step="any" value="24"></label>
+           <label class="fld">Width out<input name="width_out" type="number" step="any" value="24"></label>
+           <label class="fld">Depth out<input name="depth_out" type="number" step="any" value="36"></label>
+           <label class="fld">Length<input name="length" type="number" step="any" value="18"></label>
+           <label class="fld">Gauge<select name="gauge">${gauges.map(g => `<option value="${g}" ${g === m.default_gauge ? 'selected' : ''}>${g}ga</option>`).join('')}</select></label>
+           <label class="fld">Liner<select name="liner"><option value="0">None</option>${Object.keys(trans.transition_liner_per_sqft || {}).sort((a, b) => a - b).map(l => `<option value="${l}">${l}"</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`
+      : k.fitting
+      ? `<form id="pf" class="form-grid">
+           <label class="fld">${esc(k.fitting.size_label || 'Size')}<select name="size">${k.fitting.sizes.map(s =>
+             `<option value="${s.size}">${s.size}${esc(k.fitting.unit || '"')}</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`
+      : `<form id="pf" class="form-grid">
+           <label class="fld">Girth<select name="girth">${girths.map(g => `<option ${g === 20 ? 'selected' : ''}>${g}"</option>`).join('')}</select></label>
+           <label class="fld">Length<select name="length">${lengths.map(l => `<option ${l === 12 ? 'selected' : ''}>${l}"</option>`).join('')}</select></label>
+           <label class="fld">Gauge<select name="gauge">${gauges.map(g => `<option value="${g}" ${g === m.default_gauge ? 'selected' : ''}>${g}ga</option>`).join('')}</select></label>
+           <label class="fld">Liner<select name="liner"><option value="0">None</option>${liners.map(l => `<option value="${l}">${l}"</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`;
+    $('#pf').addEventListener('input', e => {
+      // the heights on offer depend on the width
+      if (k.id === 'ell' && e.target.name === 'w') {
+        const w = parseInt($('[name=w]').value);
+        $('[name=h]').innerHTML = ellHeights(w).map(h => `<option>${h}"</option>`).join('');
+      }
+      quote();
+    });
+    quote();
+  }
+
+  function specOf() {
+    const f = formData($('#pf'));
+    const qty = Math.max(1, Number(f.qty) || 1);
+    const k = K();
+    if (k.id === 'ell') return { qty, w: parseInt(f.w), h: parseInt(f.h) };
+    if (k.id === 'trans') return { qty, width_in: +f.width_in, depth_in: +f.depth_in, width_out: +f.width_out,
+      depth_out: +f.depth_out, length: +f.length, gauge: f.gauge, liner: Number(f.liner) };
+    if (k.fitting) return { qty, size: Number(f.size), fitting: k.fitting };
+    return { qty, girth: parseInt(f.girth), length: parseInt(f.length), gauge: f.gauge, liner: Number(f.liner) };
+  }
+
+  async function quote() {
+    const s = specOf(), k = K();
+    if (k.fitting) {
+      const hit = k.fitting.sizes.find(x => x.size === s.size);
+      return show({ ok: true, price: hit.price, label: `${k.fitting.name} — ${s.size}${k.fitting.unit || '"'}` }, s);
+    }
+    if (k.id === 'ell') {
+      const hit = ells.combos.find(c => c.w === s.w && c.h === s.h);
+      return show(hit ? { ok: true, price: hit.price, label: `Ell ${s.w}" × ${s.h}"` }
+        : { ok: false, error: `No price on file for a ${s.w}" × ${s.h}" ell.` }, s);
+    }
+    if (k.id === 'trans') {
+      const r = await api('duct/transition', 'POST', s);
+      return show(r.ok ? { ...r, label: `Transition ${s.width_in}×${s.depth_in} to ${s.width_out}×${s.depth_out}, ${s.length}" long — ${s.gauge}ga${s.liner ? `, ${s.liner}" liner` : ''}` } : r, s);
+    }
+    const r = await api('duct/price', 'POST', s);
+    show(r.ok ? { ...r, label: `Duct ${s.girth}" girth × ${s.length}" — ${s.gauge}ga${s.liner ? `, ${s.liner}" liner` : ''}` } : r, s);
+  }
+
+  function show(r, s) {
+    const box = $('#pick-price');
+    if (!r.ok) { box.innerHTML = `<div class="est-warn medium"><h5>Cannot price that</h5><p>${esc(r.error)}</p></div>`; return; }
+    box.innerHTML = `
+      <div class="pick-total">
+        <div><span>Each</span><b>${money(r.price)}</b></div>
+        <div><span>${s.qty} ${s.qty === 1 ? 'piece' : 'pieces'}</span><b>${money(r.price * s.qty)}</b></div>
+        <button class="btn primary" id="add-line">Add to quote</button>
+      </div>
+      ${r.used && !r.used.exact_size ? '<p class="muted" style="font-size:12px;margin-top:8px">That exact size is not timed in your book — priced off the nearest one.</p>' : ''}
+      ${r.breakdown ? `<details class="pick-why"><summary>Where the price comes from</summary>
+        <table class="tbl dc-break"><tbody>
+          <tr><td>Steel — ${r.breakdown.steel_sqft} sq ft of ${esc(r.used.gauge)}ga${r.used.area_sq_in ? ` (${r.used.area_sq_in} sq in developed)` : ''}</td><td class="num">${money(r.breakdown.steel)}</td></tr>
+          ${r.breakdown.liner_material ? `<tr><td>Liner — ${r.breakdown.liner_sqft} sq ft</td><td class="num">${money(r.breakdown.liner_material)}</td></tr>` : ''}
+          <tr><td>Fabrication labor</td><td class="num">${money(r.breakdown.fab_labor)}</td></tr>
+          ${r.breakdown.liner_labor ? `<tr><td>Liner labor</td><td class="num">${money(r.breakdown.liner_labor)}</td></tr>` : ''}
+          <tr class="sub"><td>Cost</td><td class="num">${money(r.breakdown.subtotal)}</td></tr>
+          <tr><td>Markup ${r.breakdown.markup_pct}%</td><td class="num">${money(r.price - r.breakdown.subtotal)}</td></tr>
+        </tbody></table></details>` : ''}`;
+    $('#add-line').onclick = () => {
+      cart.push({ desc: r.label, qty: s.qty, unit: 'ea', unit_cost: r.breakdown ? r.breakdown.subtotal : 0, unit_price: r.price });
+      renderCart();
+      toast(`${s.qty} × ${r.label} added`, 'ok');
+    };
+  }
+
+  function renderCart() {
+    const total = cart.reduce((t, l) => t + l.qty * l.unit_price, 0);
+    $('#cart-count').textContent = cart.length ? `${cart.length} line${cart.length === 1 ? '' : 's'}` : 'nothing yet';
+    $('#cart').innerHTML = cart.length
+      ? `<table class="tbl"><tbody>${cart.map((l, i) => `<tr>
+          <td class="strong">${esc(l.desc)}</td>
+          <td class="num muted">${l.qty} × ${money(l.unit_price)}</td>
+          <td class="num strong">${money(l.qty * l.unit_price)}</td>
+          <td><button class="btn sm ghost" data-drop="${i}">✕</button></td></tr>`).join('')}</tbody></table>`
+      : '<div class="empty" style="padding:26px 10px">Pick a size on the left and hit <b>Add to quote</b>.</div>';
+    $('#cart-foot').innerHTML = cart.length ? `
+      <div class="pick-total" style="border-top:1px solid var(--line);margin-top:12px;padding-top:14px">
+        <div><span>Quote total</span><b>${money(total)}</b></div>
+      </div>
+      <form id="cart-form" class="form-grid" style="margin-top:12px">
+        <label class="fld full">Customer<select name="client_id">${clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+        <label class="fld full">What is this for<input name="title" placeholder="e.g. Riverside kitchen exhaust" required></label>
+      </form>
+      <button class="btn primary" id="make-quote" style="width:100%;margin-top:10px">Create the quote</button>
+      <button class="linkish" id="clear-cart" style="margin-top:10px">Start over</button>` : '';
+
+    $('#cart').onclick = e => {
+      const i = e.target.dataset.drop;
+      if (i !== undefined) { cart.splice(+i, 1); renderCart(); }
+    };
+    const mk = $('#make-quote');
+    if (mk) mk.onclick = async () => {
+      const f = formData($('#cart-form'));
+      if (!f.title) return toast('Give it a name so you can find it later', 'err');
+      mk.disabled = true;
+      try {
+        const numbers = await api('numbers');
+        await api('quotes', 'POST', { quote_number: numbers.quote, client_id: f.client_id, title: f.title,
+          items: cart, labor_hours: 0, labor_rate: 0, markup_pct: 0, tax_pct: 0, status: 'draft' });
+        toast(`Quote ${numbers.quote} created`, 'ok');
+        location.hash = '#/quotes';
+      } catch (e) { toast(e.message, 'err'); mk.disabled = false; }
+    };
+    const cl = $('#clear-cart');
+    if (cl) cl.onclick = () => { cart.length = 0; renderCart(); };
+  }
+
+  $('#kind-pick').onclick = e => {
+    const b = e.target.closest('[data-kind]'); if (!b) return;
+    kind = b.dataset.kind; renderPicker();
+  };
+  renderPicker();
+  renderCart();
+};
+
+PAGES.consumption = async () => {
+  const from = new Date(); from.setDate(from.getDate() - 30);
+  let range = { from: from.toISOString().slice(0, 10), to: todayStr() };
+
+  async function render() {
+    const d = await api(`consumption?from=${range.from}&to=${range.to}`);
+    const maxMetal = Math.max(...d.by_metal.map(m => m.cost), 1);
+    view.innerHTML = `
+      <div class="toolbar">
+        <div class="filters">
+          <label class="fld" style="flex-direction:row;align-items:center;gap:8px">From<input type="date" id="c-from" value="${range.from}"></label>
+          <label class="fld" style="flex-direction:row;align-items:center;gap:8px">To<input type="date" id="c-to" value="${range.to}"></label>
+          <button class="btn ghost sm" id="c-go">Run</button>
+        </div>
+        <span class="muted">Logged by the shop at the bench, not estimated.</span>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Material Cost</div><div class="kpi-value">${money0(d.totals.cost)}</div><div class="kpi-note">${d.totals.lines} lines logged</div></div>
+        <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Solder Used</div><div class="kpi-value">${round1(d.solder.total_inches)}"</div><div class="kpi-note">${round1(d.solder.total_inches / 12)} ft · ${money0(d.solder.total_cost)}</div></div>
+        <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Metal Types</div><div class="kpi-value">${d.by_metal.length}</div><div class="kpi-note">distinct type + gauge</div></div>
+        <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Sheet Sizes</div><div class="kpi-value">${d.by_size.length}</div><div class="kpi-note">across the period</div></div>
+      </div>
+
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Metal By Type &amp; Gauge</h3>
+          ${d.by_metal.length ? d.by_metal.map(m => `
+            <div class="bar-row">
+              <span class="lbl">${esc(m.key)}</span>
+              <span class="track"><i style="width:${Math.round(m.cost / maxMetal * 100)}%"></i></span>
+              <span class="val">${round1(m.qty)} ${esc(m.unit)}</span>
+            </div>`).join('') : '<div class="empty">No metal logged in this period.</div>'}
+        </div>
+        <div class="card">
+          <h3>Solder <span class="hint">measured in inches at the bench</span></h3>
+          ${d.solder.by_type.length ? `<table class="tbl"><thead><tr><th>Type</th><th class="num">Inches</th><th class="num">Feet</th><th class="num">Cost</th></tr></thead><tbody>
+            ${d.solder.by_type.map(s => `<tr>
+              <td>${esc(s.key)}</td><td class="num strong">${round1(s.qty)}"</td>
+              <td class="num muted">${round1(s.qty / 12)}</td><td class="num">${money(s.cost)}</td></tr>`).join('')}
+          </tbody></table>` : '<div class="empty">No solder logged in this period.</div>'}
+          <h3 style="margin-top:16px">By Sheet Size</h3>
+          ${d.by_size.length ? `<table class="tbl"><tbody>
+            ${d.by_size.map(s => `<tr><td>${esc(s.key)}</td><td class="num strong">${round1(s.qty)} ${esc(s.unit)}</td><td class="num muted">${money(s.cost)}</td></tr>`).join('')}
+          </tbody></table>` : '<div class="empty">—</div>'}
+        </div>
+      </div>
+
+      <div class="card section-gap">
+        <h3>Every Line <span class="hint">newest first</span></h3>
+        ${d.rows.length ? `<table class="tbl"><thead><tr>
+          <th>When</th><th>Ticket / Job</th><th>What</th><th>Metal</th><th>Gauge</th><th>Size</th><th class="num">Qty</th><th class="num">Cost</th><th>Who</th>
+        </tr></thead><tbody>
+          ${d.rows.map(r => `<tr>
+            <td class="mono muted">${esc((r.logged_at || '').slice(5, 16))}</td>
+            <td class="mono">${esc(r.wo_number || r.job_number || '—')}</td>
+            <td>${esc(r.description)}${r.notes ? `<div class="muted" style="font-size:11.5px">${esc(r.notes)}</div>` : ''}</td>
+            <td class="muted">${esc(r.metal_type || '—')}</td>
+            <td class="muted">${esc(r.gauge || '—')}</td>
+            <td class="muted">${esc(r.size || '—')}</td>
+            <td class="num strong ${r.kind === 'solder' ? 'warnq' : ''}">${round1(r.qty)} ${esc(r.unit)}</td>
+            <td class="num">${money(r.qty * r.unit_cost)}</td>
+            <td class="muted">${esc(r.employee_name || '')}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">Nothing logged in this period.</div>'}
+      </div>`;
+    $('#c-go').onclick = () => { range = { from: $('#c-from').value, to: $('#c-to').value }; render(); };
+  }
+  await render();
+};
+
+// ---------------------------------------------------------------- GROUP VIEW
+PAGES.group = async () => {
+  const d = await api('group');
+  const g = d.group;
+  const maxRev = Math.max(...d.entities.map(e => e.revenue), 1);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Group Revenue</div><div class="kpi-value">${money0(g.external_revenue)}</div><div class="kpi-note">money from outside customers only</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Group Profit</div><div class="kpi-value pos">${money0(g.profit)}</div><div class="kpi-note">${g.margin_pct}% blended margin</div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Intercompany Volume</div><div class="kpi-value">${money0(g.intercompany_revenue)}</div><div class="kpi-note">All Spec billed to DTS — netted out above</div></div>
+      <div class="kpi" style="--kpi-accent:${g.open_receivables ? '#f5a524' : '#8496aa'}"><div class="kpi-label">Owed To The Group</div><div class="kpi-value">${money0(g.open_receivables)}</div><div class="kpi-note">across both entities</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      ${d.entities.map(e => `
+        <div class="card entity-card" style="--c:${esc(e.accent)}">
+          <h3><span class="ent-dot" style="background:${esc(e.accent)}"></span>${esc(e.name)}
+            <span class="hint">${esc(cap(e.kind))}</span></h3>
+          <table class="tbl">
+            <tr><td class="muted">Revenue</td><td class="num strong">${money(e.revenue)}</td></tr>
+            <tr><td class="muted" style="padding-left:22px">from outside customers</td><td class="num">${money(e.external_revenue)}</td></tr>
+            <tr><td class="muted" style="padding-left:22px">from the sister company</td><td class="num ${e.internal_revenue ? '' : 'muted'}">${money(e.internal_revenue)}</td></tr>
+            <tr><td class="muted">Cost</td><td class="num">${money(e.cost)}</td></tr>
+            <tr><td class="strong">Profit</td><td class="num ${e.profit >= 0 ? 'pos' : 'neg'} strong">${money(e.profit)} <span class="muted">(${e.margin_pct}%)</span></td></tr>
+            <tr><td class="muted">Owed to them</td><td class="num">${money(e.open_receivables)}</td></tr>
+          </table>
+          <div class="bar-row" style="margin-top:12px">
+            <span class="track"><i style="width:${Math.round(e.revenue / maxRev * 100)}%;background:${esc(e.accent)}"></i></span>
+          </div>
+        </div>`).join('')}
+    </div>
+
+    <div class="card section-gap">
+      <h3>How The Group Total Is Built <span class="hint">why it is not just the two added together</span></h3>
+      <table class="tbl">
+        <tr><td>Both entities' revenue added together</td><td class="num">${money(g.combined_revenue_before_elimination)}</td></tr>
+        <tr><td class="muted">Less: All Spec billing DTS — money that never left the group</td><td class="num neg">−${money(g.intercompany_revenue)}</td></tr>
+        <tr style="border-top:2px solid var(--line)"><td class="strong">Group revenue from outside customers</td><td class="num strong">${money(g.external_revenue)}</td></tr>
+        <tr><td class="muted">Less: combined cost, with the intercompany charge removed</td><td class="num neg">−${money(g.cost)}</td></tr>
+        <tr style="border-top:2px solid var(--line)"><td class="strong">Group profit</td><td class="num strong pos">${money(g.profit)}</td></tr>
+      </table>
+      <p class="muted" style="font-size:12.5px;margin-top:12px">
+        When All Spec fabricates for DTS, All Spec books revenue and DTS books a cost — correct for each entity's own return, but the
+        cash only moved between your own pockets. Group revenue counts what outside customers actually paid.
+      </p>
+    </div>
+
+    <div class="card section-gap">
+      <h3>Work Flowing Between The Companies
+        ${d.unbilled_intercompany ? `<span class="hint neg">${money0(d.unbilled_intercompany)} built but not yet billed</span>` : '<span class="hint">all billed</span>'}
+      </h3>
+      ${d.flows.length ? `<table class="tbl"><thead><tr>
+        <th>Ticket</th><th>What</th><th>Built by</th><th>For</th><th>Against</th><th class="num">Charged</th><th>Status</th><th></th>
+      </tr></thead><tbody>
+        ${d.flows.map(f => `<tr>
+          <td class="mono strong">${esc(f.wo_number)}</td>
+          <td>${esc(f.title)}</td>
+          <td><span class="badge b-sent">${esc(f.builder || '')}</span></td>
+          <td><span class="badge b-in_progress">${esc(f.buyer || '')}</span></td>
+          <td class="mono muted">${esc(f.origin_job_number || '')}</td>
+          <td class="num strong">${money(f.charged)}</td>
+          <td>${badge(f.status)}</td>
+          <td>${f.billed ? '<span class="badge b-accepted">Billed</span>'
+            : (f.status === 'completed' || f.status === 'archived')
+              ? `<button class="btn sm green" data-bill="${f.id}">Bill it</button>`
+              : '<span class="muted" style="font-size:12px">in the shop</span>'}</td>
+        </tr>`).join('')}
+      </tbody></table>` : '<div class="empty">No work has crossed between the companies yet.</div>'}
+      <p class="muted" style="font-size:12.5px;margin-top:12px">Anything built but unbilled is profit sitting in the wrong entity — bill it so both sets of books are straight.</p>
+    </div>`;
+
+  view.onclick = async e => {
+    if (!e.target.dataset.bill) return;
+    try {
+      const r = await api(`workorders/${e.target.dataset.bill}/bill`, 'POST', {});
+      toast(r.message, 'ok'); route();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+};
+
+// ---------------------------------------------------------------- CASH FLOW
+PAGES.cashflow = async () => {
+  const [cf, settings] = await Promise.all([api('cashflow?weeks=13'), api('settings')]);
+  const maxFlow = Math.max(...cf.weeks.map(w => Math.max(w.inflow, w.outflow)), 1);
+  const minBal = Math.min(0, ...cf.weeks.map(w => w.balance));
+  const maxBal = Math.max(1, ...cf.weeks.map(w => w.balance));
+  const H = 150, W = 700, pad = 34;
+  const x = i => pad + i * ((W - pad * 2) / Math.max(1, cf.weeks.length - 1));
+  const y = v => H - pad / 2 - ((v - minBal) / (maxBal - minBal || 1)) * (H - pad);
+  const line = cf.weeks.map((w, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(w.balance).toFixed(1)}`).join(' ');
+  const zeroY = y(0);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Cash On Hand</div><div class="kpi-value">${money0(cf.opening_balance)}</div><div class="kpi-note">${cf.opening_balance ? 'set in Settings' : '<a class="plain" href="#/settings">set your starting balance →</a>'}</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Expected In</div><div class="kpi-value pos">${money0(cf.total_in)}</div><div class="kpi-note">unpaid invoices, next 13 weeks</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Committed Out</div><div class="kpi-value neg">${money0(cf.total_out)}</div><div class="kpi-note">scheduled payroll + POs in transit</div></div>
+      <div class="kpi" style="--kpi-accent:${cf.first_shortfall ? '#d64545' : '#2e9e6b'}"><div class="kpi-label">Projected Balance</div><div class="kpi-value ${cf.closing_balance < 0 ? 'neg' : ''}">${money0(cf.closing_balance)}</div><div class="kpi-note">${cf.first_shortfall ? `<span class="neg">short by ${esc(cf.first_shortfall)}</span>` : 'stays positive throughout'}</div></div>
+    </div>
+
+    ${cf.first_shortfall ? `<div class="insight" style="border-left:5px solid var(--red);margin-bottom:16px">
+      <div class="sev high"></div>
+      <div><h4>Cash runs short the week of ${esc(cf.first_shortfall)}</h4>
+      <p>On current commitments you run out of money that week. Options, roughly in order of speed: collect the overdue invoices below, bill the ${money0(cf.unbilled)} of work you have delivered but not invoiced, push a purchase order, or move scheduled crew.</p></div>
+    </div>` : ''}
+
+    <div class="card">
+      <h3>Projected Balance <span class="hint">13 weeks, from commitments already in the system</span></h3>
+      <div class="chart-wrap">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:190px">
+          ${minBal < 0 ? `<rect x="${pad}" y="${zeroY}" width="${W - pad * 2}" height="${Math.max(0, H - pad / 2 - zeroY)}" fill="#fbeded"/>` : ''}
+          <line x1="${pad}" y1="${zeroY}" x2="${W - pad}" y2="${zeroY}" stroke="#dde3ea" stroke-width="1" stroke-dasharray="4 3"/>
+          <path d="${line}" fill="none" stroke="#131c26" stroke-width="2.5" stroke-linejoin="round"/>
+          ${cf.weeks.map((w, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(w.balance).toFixed(1)}" r="3.5" fill="${w.short ? '#d64545' : '#f5a524'}"><title>${w.week_start}: ${money(w.balance)}</title></circle>`).join('')}
+        </svg>
+      </div>
+      <div class="legend"><span><i style="background:#131c26"></i>Running balance</span><span><i style="background:#d64545"></i>Negative week</span></div>
+    </div>
+
+    <div class="card section-gap">
+      <h3>Week By Week</h3>
+      <table class="tbl"><thead><tr>
+        <th>Week of</th><th class="num">In</th><th class="num">Out</th><th class="num">Net</th><th class="num">Balance</th><th>What drives it</th>
+      </tr></thead><tbody>
+        ${cf.weeks.map(w => `<tr ${w.short ? 'style="background:#fdf4f4"' : ''}>
+          <td class="mono strong">${new Date(w.week_start + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric' })}</td>
+          <td class="num ${w.inflow ? 'pos' : 'muted'}">${w.inflow ? money0(w.inflow) : '—'}</td>
+          <td class="num ${w.outflow ? 'neg' : 'muted'}">${w.outflow ? money0(w.outflow) : '—'}</td>
+          <td class="num ${w.net >= 0 ? '' : 'neg'}">${money0(w.net)}</td>
+          <td class="num strong ${w.short ? 'neg' : ''}">${money0(w.balance)}</td>
+          <td class="muted" style="font-size:12px">${[...w.inflows, ...w.outflows].slice(0, 3).map(f => esc(f.label)).join(' · ') || '—'}</td>
+        </tr>`).join('')}
+      </tbody></table>
+      <p class="muted" style="font-size:12.5px;margin-top:12px">
+        Inflows are unpaid invoices at their due dates — anything overdue is counted in the first week, since that money is already late.
+        Outflows are crew hours already on the schedule at their pay rates, plus purchase orders in transit at their expected dates.
+        Work you have delivered but not yet invoiced (<b>${money0(cf.unbilled)}</b>) is <b>not</b> counted until you bill it.
+      </p>
+    </div>`;
+};
+
+// ---------------------------------------------------------------- PAYROLL
+PAGES.payroll = async () => {
+  const jobs = await api('jobs');
+  const pwJobs = jobs.filter(j => j.prevailing_wage);
+  const monday = (() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
+  const from = new Date(monday); from.setDate(from.getDate() - 7);
+
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters">
+        <label class="fld" style="flex-direction:row;align-items:center;gap:8px">From<input type="date" id="pr-from" value="${from.toISOString().slice(0, 10)}"></label>
+        <label class="fld" style="flex-direction:row;align-items:center;gap:8px">To<input type="date" id="pr-to" value="${todayStr()}"></label>
+        <button class="btn ghost sm" id="pr-go">Run</button>
+      </div>
+      <a class="btn ghost" id="pr-csv" download>⬇ Export CSV</a>
+    </div>
+    <div id="pr-out"><div class="empty">Loading…</div></div>
+
+    <div class="card section-gap">
+      <h3>Certified Payroll <span class="hint">WH-347 style, for prevailing-wage work</span></h3>
+      ${pwJobs.length ? `
+        <div class="toolbar" style="margin-bottom:12px">
+          <div class="filters">
+            <label class="fld" style="flex-direction:row;align-items:center;gap:8px">Job<select id="cp-job">
+              ${jobs.map(j => `<option value="${j.id}" ${j.prevailing_wage ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}${j.prevailing_wage ? ' (prevailing wage)' : ''}</option>`).join('')}
+            </select></label>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:8px">Week ending<input type="date" id="cp-week" value="${todayStr()}"></label>
+            <button class="btn ghost sm" id="cp-go">Run</button>
+          </div>
+          <a class="btn ghost sm" id="cp-csv" download>⬇ CSV</a>
+        </div>` : '<div class="hr-note">No jobs are flagged as prevailing wage. Tick <b>prevailing wage</b> on a job to file certified payroll for it.</div>'}
+      <div id="cp-out"></div>
+    </div>`;
+
+  async function runPayroll() {
+    const f = $('#pr-from').value, t = $('#pr-to').value;
+    $('#pr-csv').href = `/api/payroll?from=${f}&to=${t}&format=csv`;
+    const d = await api(`payroll?from=${f}&to=${t}`);
+    $('#pr-out').innerHTML = `
+      <div class="kpis">
+        <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Total Hours</div><div class="kpi-value">${d.totals.hours}</div><div class="kpi-note">${d.from} → ${d.to}</div></div>
+        <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Gross Payroll</div><div class="kpi-value">${money0(d.totals.gross)}</div><div class="kpi-note">before taxes and withholding</div></div>
+        <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Overtime Hours</div><div class="kpi-value">${d.rows.reduce((s, r) => s + r.ot_hours, 0)}</div><div class="kpi-note">over 40 in a week, at 1.5×</div></div>
+        <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">On Payroll</div><div class="kpi-value">${d.rows.length}</div><div class="kpi-note">employees with hours</div></div>
+      </div>
+      <div class="card"><table class="tbl"><thead><tr>
+        <th>Employee</th><th>Classification</th><th class="num">Rate</th><th class="num">Regular</th><th class="num">OT</th><th class="num">Total hrs</th><th class="num">Gross</th><th>Jobs worked</th>
+      </tr></thead><tbody>
+        ${d.rows.length ? d.rows.map(r => `<tr>
+          <td class="strong">${esc(r.name)}</td>
+          <td class="muted">${esc(r.classification)}</td>
+          <td class="num">${money(r.rate)}</td>
+          <td class="num">${r.regular_hours}</td>
+          <td class="num ${r.ot_hours ? 'neg' : 'muted'}">${r.ot_hours || '—'}</td>
+          <td class="num strong">${r.total_hours}</td>
+          <td class="num">${money(r.gross_pay)}</td>
+          <td class="muted" style="font-size:12px">${Object.entries(r.by_job).map(([j, h]) => `${esc(j)} (${h})`).join(', ')}</td>
+        </tr>`).join('') : '<tr><td colspan="8"><div class="empty">No hours in this period.</div></td></tr>'}
+      </tbody></table></div>`;
+  }
+  $('#pr-go').onclick = runPayroll;
+  runPayroll();
+
+  if (pwJobs.length) {
+    async function runCertified() {
+      const jobId = $('#cp-job').value, wk = $('#cp-week').value;
+      $('#cp-csv').href = `/api/payroll/certified?job_id=${jobId}&week_ending=${wk}&format=csv`;
+      const d = await api(`payroll/certified?job_id=${jobId}&week_ending=${wk}`);
+      $('#cp-out').innerHTML = d.employees.length ? `
+        <p class="muted" style="font-size:12.5px;margin-bottom:10px">${esc(d.job.job_number)} — ${esc(d.job.title)} · payroll week ${d.week_start} to ${d.week_ending}</p>
+        <table class="tbl"><thead><tr>
+          <th>Employee</th><th>Classification</th>
+          ${d.days.map(x => `<th class="num">${new Date(x + 'T12:00').toLocaleDateString([], { weekday: 'narrow', day: 'numeric' })}</th>`).join('')}
+          <th class="num">Total</th><th class="num">Rate</th><th class="num">Gross</th><th class="num">Fringe</th><th class="num">Package</th>
+        </tr></thead><tbody>
+          ${d.employees.map(e => `<tr>
+            <td class="strong">${esc(e.name)}</td><td class="muted">${esc(e.classification)}</td>
+            ${d.days.map(x => `<td class="num ${e.days[x] ? '' : 'muted'}">${e.days[x] || '—'}</td>`).join('')}
+            <td class="num strong">${e.total}</td><td class="num">${money(e.rate)}</td>
+            <td class="num">${money(e.gross_pay)}</td><td class="num muted">${money(e.fringe_total)}</td>
+            <td class="num strong">${money(e.total_package)}</td>
+          </tr>`).join('')}
+        </tbody></table>
+        <p class="muted" style="font-size:12px;margin-top:10px">Fringe is calculated from each classification's fringe rate on the Team page. Verify against the current wage determination before filing.</p>`
+        : '<div class="empty">No hours clocked on that job during that week.</div>';
+    }
+    $('#cp-go').onclick = runCertified;
+    runCertified();
+  }
+};
+
+// ---------------------------------------------------------------- SUBCONTRACTORS
+PAGES.subs = async () => {
+  const [subs, jobs] = await Promise.all([api('subcontractors'), api('jobs')]);
+  const bad = subs.filter(s => s.active && !s.compliant);
+  const soon = subs.filter(s => s.compliant && s.coi_days_left !== null && s.coi_days_left <= 30);
+
+  view.innerHTML = `
+    ${bad.length ? `<div class="insight" style="border-left:5px solid var(--red);margin-bottom:16px">
+      <div class="sev high"></div>
+      <div><h4>${bad.length} subcontractor${bad.length > 1 ? 's are' : ' is'} not insured right now</h4>
+      <p>${bad.map(s => esc(s.name)).join(', ')} — pull them off the schedule until a current certificate is on file. Your general liability policy will not cover work by an uninsured sub, and neither will your customer's.</p></div>
+    </div>` : ''}
+
+    <div class="toolbar">
+      <span class="muted">${soon.length ? `${soon.length} certificate${soon.length > 1 ? 's expire' : ' expires'} within 30 days.` : 'All certificates current.'}</span>
+      <button class="btn primary" id="s-new">+ Add Subcontractor</button>
+    </div>
+
+    <div class="grid grid-2" id="s-grid">
+      ${subs.map(s => `
+        <div class="card sub-card ${s.active && !s.compliant ? 'danger' : ''}">
+          <h3>${esc(s.name)}
+            <span class="r" style="float:right;font-weight:400">${s.compliant
+              ? `<span class="badge b-accepted">Insured${s.coi_days_left <= 30 ? ` · ${s.coi_days_left}d left` : ''}</span>`
+              : '<span class="badge b-declined">Not insured</span>'}</span>
+          </h3>
+          <table class="tbl" style="margin-bottom:10px">
+            <tr><td class="muted" style="width:96px">Trade</td><td class="strong">${esc(s.trade || '—')}</td></tr>
+            <tr><td class="muted">Contact</td><td>${esc(s.contact || '—')}${s.phone ? ` · <span class="mono">${esc(s.phone)}</span>` : ''}</td></tr>
+            <tr><td class="muted">Email</td><td>${esc(s.email || '—')}</td></tr>
+            <tr><td class="muted">License</td><td class="mono">${esc(s.license_number || '—')}</td></tr>
+            ${s.jobs.length ? `<tr><td class="muted">On jobs</td><td>${s.jobs.map(j => `<span class="mono">${esc(j.job_number)}</span> ${money0(j.contract_amount)}`).join('<br>')}</td></tr>` : ''}
+          </table>
+          <div class="docs">
+            ${s.documents.length ? s.documents.map(d => {
+              const days = d.expires_on ? Math.floor((new Date(d.expires_on) - new Date(todayStr())) / 864e5) : null;
+              const cls = days === null ? '' : days < 0 ? 'expired' : days <= 30 ? 'soon' : 'ok';
+              return `<div class="doc ${cls}">
+                <span class="dt">${esc(d.doc_type)}</span>
+                <span class="dd">${esc(d.carrier || d.policy_number || '')}</span>
+                <span class="de">${d.expires_on ? `${days < 0 ? 'expired' : 'expires'} ${esc(d.expires_on)}${days !== null ? ` (${days < 0 ? Math.abs(days) + 'd ago' : days + 'd'})` : ''}` : 'no expiry'}</span>
+                <button class="btn sm ghost" data-deldoc="${d.id}">×</button>
+              </div>`;
+            }).join('') : '<div class="empty" style="padding:12px;font-size:13px">No documents on file.</div>'}
+          </div>
+          <div style="margin-top:10px">
+            <button class="btn sm ghost" data-edit="${s.id}">Edit</button>
+            <button class="btn sm ghost" data-doc="${s.id}">+ Document</button>
+            <button class="btn sm ghost" data-assign="${s.id}">Assign to job</button>
+          </div>
+        </div>`).join('')}
+    </div>`;
+
+  view.onclick = async e => {
+    const t = e.target;
+    if (t.dataset.edit) return subModal(subs.find(s => s.id === +t.dataset.edit));
+    if (t.dataset.doc) return docModal(subs.find(s => s.id === +t.dataset.doc));
+    if (t.dataset.assign) return assignModal(subs.find(s => s.id === +t.dataset.assign));
+    if (t.dataset.deldoc) {
+      if (!confirm('Remove this document?')) return;
+      await api('subdocuments/' + t.dataset.deldoc, 'DELETE');
+      toast('Document removed', 'ok'); route();
+    }
+  };
+  $('#s-new').onclick = () => subModal();
+
+  function subModal(s) {
+    openModal(`
+      <div class="modal-head"><h2>${s ? 'Edit ' + esc(s.name) : 'Add Subcontractor'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="sf" class="form-grid">
+        <label class="fld full">Company<input name="name" required value="${esc(s?.name || '')}"></label>
+        <label class="fld">Trade<input name="trade" value="${esc(s?.trade || '')}" placeholder="Electrical, Plumbing…"></label>
+        <label class="fld">License #<input name="license_number" value="${esc(s?.license_number || '')}"></label>
+        <label class="fld">Contact<input name="contact" value="${esc(s?.contact || '')}"></label>
+        <label class="fld">Phone<input name="phone" value="${esc(s?.phone || '')}"></label>
+        <label class="fld full">Email<input name="email" value="${esc(s?.email || '')}"></label>
+        <label class="fld full">Notes<textarea name="notes">${esc(s?.notes || '')}</textarea></label>
+        ${s ? `<label class="fld full">Status<select name="active"><option value="1" ${s.active ? 'selected' : ''}>Active</option><option value="0" ${s.active ? '' : 'selected'}>Inactive</option></select></label>` : ''}
+      </form></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="sf-save">Save</button></div>`, { narrow: true });
+    $('#sf-save').onclick = async () => {
+      const f = formData($('#sf'));
+      if (!f.name) return toast('Company name is required', 'err');
+      if (s) await api('subcontractors/' + s.id, 'PUT', f); else await api('subcontractors', 'POST', f);
+      closeModal(); toast('Subcontractor saved', 'ok'); route();
+    };
+  }
+
+  function docModal(s) {
+    openModal(`
+      <div class="modal-head"><h2>Add document — ${esc(s.name)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="df" class="form-grid">
+        <label class="fld">Type<select name="doc_type">${['COI', 'W-9', 'License', 'Contract', 'Other'].map(d => `<option>${d}</option>`).join('')}</select></label>
+        <label class="fld">Carrier / issuer<input name="carrier" placeholder="e.g. Travelers"></label>
+        <label class="fld">Policy / doc number<input name="policy_number"></label>
+        <label class="fld">Issued<input name="issued_on" type="date"></label>
+        <label class="fld">Expires<input name="expires_on" type="date"></label>
+        <label class="fld full">Notes<input name="notes"></label>
+      </form>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">Expiry dates drive the warnings on this page and in AI Insights — always fill one in for a COI.</p></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="df-save">Add</button></div>`, { narrow: true });
+    $('#df-save').onclick = async () => {
+      await api('subdocuments', 'POST', { ...formData($('#df')), sub_id: s.id });
+      closeModal(); toast('Document added', 'ok'); route();
+    };
+  }
+
+  function assignModal(s) {
+    openModal(`
+      <div class="modal-head"><h2>Assign ${esc(s.name)} to a job</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        ${s.compliant ? '' : '<div class="hr-note"><b>This sub has no current insurance certificate.</b> You can still record the assignment, but do not let them start until you have one.</div>'}
+        <form id="af" class="form-grid">
+          <label class="fld full">Job<select name="job_id">${jobs.filter(j => j.status !== 'completed').map(j => `<option value="${j.id}">${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}</select></label>
+          <label class="fld full">Scope<input name="scope" placeholder="What are they doing?"></label>
+          <label class="fld">Contract amount $<input name="contract_amount" type="number" step="any" value="0"></label>
+        </form>
+        <p class="muted" style="font-size:12.5px;margin-top:10px">The contract amount is counted as a cost against that job's profit.</p>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="af-save">Assign</button></div>`, { narrow: true });
+    $('#af-save').onclick = async () => {
+      await api('jobsubs', 'POST', { ...formData($('#af')), sub_id: s.id });
+      closeModal(); toast('Assigned to job', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- REPORTS
+PAGES.reports = async () => {
+  const r = await api('reports');
+  const maxRev = Math.max(...r.byClient.map(c => c.revenue), 1);
+  const completed = r.jobs.filter(j => j.status === 'completed');
+  const totalRev = completed.reduce((s, j) => s + j.sold_price, 0);
+  const totalProfit = completed.reduce((s, j) => s + j.profit, 0);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Completed Revenue</div><div class="kpi-value">${money0(totalRev)}</div><div class="kpi-note">${completed.length} finished jobs</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Realized Profit</div><div class="kpi-value pos">${money0(totalProfit)}</div><div class="kpi-note">${totalRev ? Math.round(totalProfit / totalRev * 100) : 0}% blended margin</div></div>
+      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Quote Win Rate</div><div class="kpi-value">${r.winRate === null ? '—' : r.winRate + '%'}</div><div class="kpi-note">${r.quoteCounts.map(q => `${q.n} ${q.status}`).join(' · ')}</div></div>
+      <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Crew Utilization</div><div class="kpi-value">${r.labor.length ? Math.round(r.labor.reduce((s, l) => s + l.utilization, 0) / r.labor.length) : 0}%</div><div class="kpi-note">billable hours ÷ clocked hours, 30d</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>Revenue By Client <span class="hint">all time</span></h3>
+        ${r.byClient.filter(c => c.revenue > 0).map(c => `
+          <div class="bar-row">
+            <span class="lbl">${esc(c.name)}</span>
+            <span class="track"><i style="width:${Math.round(c.revenue / maxRev * 100)}%"></i></span>
+            <span class="val">${money0(c.revenue)}</span>
+          </div>`).join('') || '<div class="empty">No revenue recorded yet.</div>'}
+        <div class="legend"><span><i style="background:#131c26"></i>Revenue booked against jobs</span></div>
+      </div>
+      <div class="card">
+        <h3>Margin By Client <span class="hint">profit ÷ revenue</span></h3>
+        <table class="tbl"><thead><tr><th>Client</th><th class="num">Jobs</th><th class="num">Profit</th><th class="num">Margin</th></tr></thead><tbody>
+          ${r.byClient.filter(c => c.revenue > 0).map(c => `<tr>
+            <td class="strong">${esc(c.name)}</td><td class="num">${c.jobs}</td>
+            <td class="num ${c.profit >= 0 ? 'pos' : 'neg'}">${money0(c.profit)}</td>
+            <td class="num">${c.margin_pct}%</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+    </div>
+
+    <div class="grid grid-2 section-gap">
+      <div class="card">
+        <h3>Crew Hours &amp; Utilization <span class="hint">last 30 days</span></h3>
+        <table class="tbl"><thead><tr><th>Employee</th><th class="num">Hours</th><th class="num">Billable</th><th class="num">Util.</th><th class="num">Labor cost</th></tr></thead><tbody>
+          ${r.labor.map(l => `<tr>
+            <td class="strong">${esc(l.name)}<div class="muted" style="font-size:11.5px">${esc(l.role)}</div></td>
+            <td class="num">${l.hours}</td><td class="num">${l.billable_hours}</td>
+            <td class="num ${l.utilization >= 80 ? 'pos' : l.utilization < 50 ? 'neg' : ''}">${l.utilization}%</td>
+            <td class="num">${money0(l.cost)}</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+      <div class="card">
+        <h3>Biggest Material Spend</h3>
+        <table class="tbl"><thead><tr><th>Material</th><th class="num">Qty used</th><th class="num">Spend</th></tr></thead><tbody>
+          ${r.topMaterials.length ? r.topMaterials.map(m => `<tr>
+            <td>${esc(m.name)}</td><td class="num">${round(m.qty)}</td><td class="num">${money0(m.spend)}</td></tr>`).join('')
+            : '<tr><td colspan="3"><div class="empty">No material usage logged yet.</div></td></tr>'}
+        </tbody></table>
+      </div>
+    </div>
+
+    <div class="card section-gap">
+      <h3>Job Profitability <span class="hint">every job, best margin first</span></h3>
+      <table class="tbl"><thead><tr><th>Job</th><th>Client</th><th>Status</th><th class="num">Sold</th><th class="num">Cost</th><th class="num">Profit</th><th class="num">Margin</th></tr></thead><tbody>
+        ${[...r.jobs].sort((a, b) => b.margin_pct - a.margin_pct).map(j => `<tr>
+          <td><span class="mono strong">${esc(j.job_number)}</span> ${esc(j.title)}</td>
+          <td class="muted">${esc(j.client || '—')}</td>
+          <td>${badge(j.status)}</td>
+          <td class="num">${money0(j.sold_price)}</td>
+          <td class="num">${money0(j.total_cost)}</td>
+          <td class="num ${j.profit >= 0 ? 'pos' : 'neg'}">${money0(j.profit)}</td>
+          <td class="num">${j.margin_pct}%</td></tr>`).join('')}
+      </tbody></table>
+    </div>`;
+  function round(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+};
+
+// ---------------------------------------------------------------- USERS & ACCESS
+PAGES.users = async () => {
+  const [users, employees] = await Promise.all([api('users'), api('employees')]);
+  view.innerHTML = `
+    <div class="toolbar">
+      <span class="muted">Admins get the full Command Center. Crew get the mobile field portal only — they never see pricing, costs or margins.</span>
+      <button class="btn primary" id="u-new">+ Add User</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Username</th><th>Employee</th><th>Access</th><th>Last sign-in</th><th>Status</th><th></th>
+    </tr></thead><tbody>
+      ${users.map(u => `<tr>
+        <td class="mono strong">${esc(u.username)}${u.id === ME.id ? ' <span class="muted">(you)</span>' : ''}</td>
+        <td>${esc(u.employee_name || '—')}</td>
+        <td>${u.role === 'admin' ? '<span class="badge b-in_progress">Office / Admin</span>' : '<span class="badge b-open">Crew Portal</span>'}</td>
+        <td class="muted mono">${u.last_login ? esc(u.last_login.slice(0, 16)) : 'never'}</td>
+        <td>${u.active ? '<span class="badge b-accepted">Active</span>' : '<span class="badge b-archived">Disabled</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${u.id}">Edit</button>
+          ${u.id === ME.id ? '' : `<button class="btn sm ghost" data-del="${u.id}">Delete</button>`}
+        </td>
+      </tr>`).join('')}
+    </tbody></table></div>
+
+    <div class="card section-gap">
+      <h3>Recent Activity <span class="hint">who did what</span></h3>
+      <div id="audit-list"><div class="empty">Loading…</div></div>
+    </div>`;
+
+  api('audit').then(rows => {
+    const el = $('#audit-list'); if (!el) return;
+    el.innerHTML = rows.length ? `<table class="tbl"><thead><tr><th>When</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody>
+      ${rows.slice(0, 40).map(a => `<tr>
+        <td class="mono muted">${esc(a.created_at.slice(5, 16))}</td>
+        <td class="strong">${esc(a.username)}</td>
+        <td>${esc(cap(a.action))}</td>
+        <td class="muted">${esc(a.detail)}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">No activity recorded yet.</div>';
+  }).catch(() => {});
+
+  $('#u-new').onclick = () => userModal();
+  view.onclick = async e => {
+    if (e.target.dataset.edit) return userModal(users.find(u => u.id === +e.target.dataset.edit));
+    if (e.target.dataset.del) {
+      const u = users.find(x => x.id === +e.target.dataset.del);
+      if (!confirm(`Delete the login "${u.username}"? Their time records stay intact.`)) return;
+      try { await api('users/' + u.id, 'DELETE'); toast('User deleted', 'ok'); route(); }
+      catch (err) { toast(err.message, 'err'); }
+    }
+  };
+
+  function userModal(u) {
+    openModal(`
+      <div class="modal-head"><h2>${u ? 'Edit ' + esc(u.username) : 'Add User'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="u-form" class="form-grid">
+        ${u ? '' : '<label class="fld full">Username<input name="username" required autocapitalize="off" placeholder="e.g. dave"></label>'}
+        <label class="fld full">${u ? 'New password <span style="font-weight:400">(leave blank to keep current)</span>' : 'Password'}<input name="password" type="password" autocomplete="new-password" placeholder="at least 6 characters"></label>
+        <label class="fld">Access level<select name="role">
+          <option value="crew" ${u && u.role === 'crew' ? 'selected' : ''}>Crew — field portal only</option>
+          <option value="admin" ${u && u.role === 'admin' ? 'selected' : ''}>Admin — full Command Center</option>
+        </select></label>
+        <label class="fld">Linked employee<select name="employee_id"><option value="">— none —</option>
+          ${employees.map(e => `<option value="${e.id}" ${u && u.employee_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select></label>
+        ${u ? `<label class="fld full">Status<select name="active"><option value="1" ${u.active ? 'selected' : ''}>Active</option><option value="0" ${u.active ? '' : 'selected'}>Disabled</option></select></label>` : ''}
+      </form>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">Linking an employee is what connects a login to their schedule, time clock and assigned work orders.</p></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="u-save">Save</button></div>`, { narrow: true });
+    $('#u-save').onclick = async () => {
+      const f = formData($('#u-form'));
+      if (!f.password) delete f.password;
+      if (f.employee_id === '') f.employee_id = null;
+      try {
+        if (u) await api('users/' + u.id, 'PUT', f); else await api('users', 'POST', f);
+        closeModal(); toast('User saved', 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+};
+
+// ---------------------------------------------------------------- SETTINGS
+PAGES.settings = async () => {
+  const [s, emails, companies] = await Promise.all([api('settings'), api('emails'), api('companies')]);
+  // edit whichever entity you are currently in; in group view, start with the first
+  let editingId = ME.scope.active_id || companies[0].id;
+  const co = () => companies.find(c => c.id === editingId) || companies[0];
+
+  const f = (name, label, opts = {}) => `
+    <label class="fld ${opts.full ? 'full' : ''}">${label}
+      ${opts.textarea
+        ? `<textarea name="${name}" style="min-height:${opts.height || 90}px">${esc(s[name] || '')}</textarea>`
+        : `<input name="${name}" type="${opts.type || 'text'}" value="${esc(s[name] || '')}" placeholder="${esc(opts.placeholder || '')}">`}
+    </label>`;
+  const cf = (name, label, opts = {}) => {
+    const v = co()[name];
+    return `<label class="fld ${opts.full ? 'full' : ''}">${label}
+      ${opts.textarea
+        ? `<textarea name="${name}" style="min-height:${opts.height || 90}px">${esc(v ?? '')}</textarea>`
+        : `<input name="${name}" type="${opts.type || 'text'}" value="${esc(v ?? '')}" placeholder="${esc(opts.placeholder || '')}">`}
+    </label>`;
+  };
+
+  view.innerHTML = `
+    ${companies.length > 1 ? `<div class="toolbar">
+      <div class="filters" id="co-tabs">
+        ${companies.map(c => `<span class="chip ${c.id === editingId ? 'active' : ''}" data-co="${c.id}" style="--c:${esc(c.accent)}">
+          <span class="ent-dot" style="background:${esc(c.accent)}"></span>${esc(c.name)}</span>`).join('')}
+      </div>
+      <span class="muted">Each entity bills, prices and brands itself separately.</span>
+    </div>` : ''}
+    <div class="grid grid-2">
+      <div>
+        <div class="card" style="border-top:3px solid ${esc(co().accent)}">
+          <h3>${esc(co().name)} <span class="hint">${esc(cap(co().kind))} · ${esc(co().code)}</span></h3>
+          <form id="set-company" class="form-grid">
+            ${cf('name', 'Trading name', { full: true })}
+            ${cf('legal_name', 'Legal entity name', { full: true })}
+            ${cf('tagline', 'Tagline shown on documents', { full: true })}
+            ${cf('address', 'Address', { full: true })}
+            ${cf('phone', 'Phone')}
+            ${cf('email', 'Office email')}
+            ${cf('website', 'Website')}
+            ${cf('license_number', 'License #')}
+            ${cf('accent', 'Brand colour', { placeholder: '#f5a524' })}
+            ${cf('mail_from', 'Send mail as', { placeholder: 'Company <office@company.com>' })}
+          </form>
+        </div>
+        <div class="card">
+          <h3>${esc(co().code)} Pricing Defaults</h3>
+          <form id="set-pricing" class="form-grid">
+            ${cf('default_labor_rate', 'Default labor rate $/hr', { type: 'number' })}
+            ${cf('default_tax_pct', 'Default tax %', { type: 'number' })}
+            ${cf('target_margin_pct', 'Target margin %', { type: 'number' })}
+            ${cf('default_retainage_pct', 'Default retainage %', { type: 'number' })}
+            ${cf('payment_terms_days', 'Payment terms (days)', { type: 'number' })}
+            ${cf('cash_on_hand', 'Cash on hand', { type: 'number' })}
+            ${cf('quote_terms', 'Terms printed on every proposal', { textarea: true, full: true, height: 120 })}
+          </form>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Email Delivery <span class="hint">${s.smtp_host ? 'configured' : 'not configured'}</span></h3>
+          ${s.smtp_host ? '' : `<div class="hr-note">Until this is filled in, emailing a quote writes a <b>full preview to the outbox</b> instead of sending. Use the SMTP details from your email provider — for Gmail/Google Workspace that's <b>smtp.gmail.com</b>, port 587, with an app password.</div>`}
+          <form id="set-mail" class="form-grid">
+            ${f('smtp_host', 'SMTP host', { full: true, placeholder: 'smtp.gmail.com' })}
+            ${f('smtp_port', 'Port', { type: 'number', placeholder: '587' })}
+            <label class="fld">Connection<select name="smtp_secure">
+              <option value="0" ${s.smtp_secure === '1' ? '' : 'selected'}>STARTTLS (587)</option>
+              <option value="1" ${s.smtp_secure === '1' ? 'selected' : ''}>SSL/TLS (465)</option>
+            </select></label>
+            ${f('smtp_user', 'Username', { full: true })}
+            ${f('smtp_pass', 'Password / app password', { type: 'password', full: true })}
+            ${f('mail_from', 'Send proposals as', { full: true, placeholder: 'Company <office@company.com>' })}
+            ${f('app_base_url', 'Public site address (for customer approval links)', { full: true, placeholder: 'https://quotes.yourcompany.com' })}
+          </form>
+        </div>
+        <div class="card">
+          <h3>${esc(co().code)} Getting Paid</h3>
+          <form id="set-pay" class="form-grid">
+            ${cf('payment_link_url', 'Payment link customers can click', { full: true, placeholder: 'https://buy.stripe.com/… or your Square / PayPal link' })}
+            ${cf('payment_instructions', 'Remittance instructions printed on invoices', { textarea: true, full: true, height: 70 })}
+          </form>
+          <form id="set-pay-global" class="form-grid" style="margin-top:12px">
+            ${f('stripe_webhook_secret', 'Stripe webhook signing secret (shared)', { type: 'password', full: true, placeholder: 'whsec_…' })}
+          </form>
+          <p class="muted" style="font-size:12.5px;margin-top:10px">Paste a payment link and a <b>Pay online</b> button appears on every unpaid invoice. Add the webhook secret and point your processor at <span class="mono">${esc(location.origin)}/api/webhooks/stripe</span> to have payments record themselves.</p>
+        </div>
+
+        <div class="card">
+          <h3><span class="ai-spark">✦</span> AI Assistant <span class="hint" id="ai-set-mode">…</span></h3>
+          <div class="hr-note">Quote drafting works right now with no key — it reads your own price history and material list. Adding a key lets the assistant also <b>answer questions about your books</b> and <b>rewrite scope wording</b>, and it drafts longer scopes more cleanly. Prices always come from your catalog either way; a model is never allowed to invent one.</div>
+          <form id="set-ai" class="form-grid">
+            ${f('ai_api_key', 'API key', { type: 'password', full: true, placeholder: 'sk-ant-…' })}
+            ${f('ai_model', 'Model', { full: true, placeholder: 'claude-sonnet-5' })}
+            ${f('ai_base_url', 'API endpoint (leave blank unless self-hosting)', { full: true, placeholder: 'https://api.anthropic.com' })}
+            <label class="fld">Assistant<select name="ai_enabled">
+              <option value="1" ${s.ai_enabled === '0' ? '' : 'selected'}>On</option>
+              <option value="0" ${s.ai_enabled === '0' ? 'selected' : ''}>Off</option>
+            </select></label>
+          </form>
+          <p class="muted" style="font-size:12.5px;margin-top:10px">The key is stored on this server only and is never sent to the browser. Every draft and question is written to the audit log.</p>
+        </div>
+
+        <div class="card">
+          <h3>Backups <span class="hint">automatic, daily</span></h3>
+          <div id="backup-list"><div class="empty">Loading…</div></div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button class="btn primary sm" id="bk-now">Back up now</button>
+            <a class="btn ghost sm" href="/api/export" download>⬇ Export everything (JSON)</a>
+            <a class="btn ghost sm" href="/api/export/invoices.csv" download>⬇ Invoices CSV</a>
+            <a class="btn ghost sm" href="/api/export/jobs.csv" download>⬇ Jobs CSV</a>
+            <a class="btn ghost sm" href="/api/export/time_entries.csv" download>⬇ Time CSV</a>
+          </div>
+          <p class="muted" style="font-size:12.5px;margin-top:10px">A snapshot is written automatically once a day and on startup; the newest ${'14'} are kept. <b>To restore:</b> stop the server, replace <span class="mono">data/dts.db</span> with a downloaded snapshot, and start it again.</p>
+        </div>
+
+        <div class="card">
+          <h3>Sent Proposals <span class="hint">last 100</span></h3>
+          ${emails.length ? `<table class="tbl"><thead><tr><th>When</th><th>To</th><th>Status</th><th></th></tr></thead><tbody>
+            ${emails.map(e => `<tr>
+              <td class="mono muted">${esc(e.created_at.slice(5, 16))}</td>
+              <td>${esc(e.to_email)}<div class="muted" style="font-size:11.5px">${esc(e.subject)}</div></td>
+              <td>${e.status === 'sent' ? '<span class="badge b-accepted">Sent</span>' : e.status === 'outbox' ? '<span class="badge b-sent">Outbox</span>' : `<span class="badge b-declined" title="${esc(e.error)}">Failed</span>`}</td>
+              <td>${e.preview_file ? `<a class="plain" href="/outbox/${esc(e.preview_file)}" target="_blank">Preview</a>` : ''}</td>
+            </tr>`).join('')}
+          </tbody></table>` : '<div class="empty">No proposals emailed yet.</div>'}
+        </div>
+      </div>
+    </div>
+    <div class="toolbar section-gap" style="justify-content:flex-end">
+      <span class="muted" id="save-note"></span>
+      <button class="btn primary" id="set-save">Save All Settings</button>
+    </div>`;
+
+  const tabs = $('#co-tabs');
+  if (tabs) tabs.onclick = e => {
+    const c = e.target.closest('[data-co]'); if (!c) return;
+    editingId = +c.dataset.co;
+    PAGES.settings();
+  };
+
+  $('#set-save').onclick = async () => {
+    // company-specific fields go on the entity, shared plumbing stays global
+    const perCompany = { ...formData($('#set-company')), ...formData($('#set-pricing')), ...formData($('#set-pay')) };
+    const global = { ...formData($('#set-mail')), ...formData($('#set-pay-global')), ...formData($('#set-ai')) };
+    if (/^•+$/.test(String(global.smtp_pass))) delete global.smtp_pass;
+    if (/^•+$/.test(String(global.ai_api_key))) delete global.ai_api_key;
+    delete global.mail_from;                        // mail_from is per entity
+    await api('companies/' + editingId, 'PUT', perCompany);
+    await api('settings', 'PUT', global);
+    toast(`${co().name} settings saved`, 'ok');
+    $('#save-note').textContent = 'Saved ' + new Date().toLocaleTimeString();
+    ME = await api('auth/me'); renderEntitySwitch();
+  };
+
+  api('ai/status').then(a => {
+    const el = $('#ai-set-mode'); if (!el) return;
+    el.textContent = a.mode === 'model'
+      ? `live · ${a.model} · ${a.catalog_size} priced items`
+      : `no key — drafting from your ${a.catalog_size} priced items`;
+  }).catch(() => {});
+
+  async function loadBackups() {
+    const { backups } = await api('backups');
+    const el = $('#backup-list');
+    if (!el) return;
+    el.innerHTML = backups.length ? `<table class="tbl"><thead><tr><th>Snapshot</th><th class="num">Size</th><th></th></tr></thead><tbody>
+      ${backups.slice(0, 6).map(b => `<tr>
+        <td class="mono" style="font-size:12px">${esc(b.filename.replace(/^dts-|\.db$/g, '').replace(/T/, ' '))}</td>
+        <td class="num muted">${Math.round(b.size / 1024).toLocaleString()} KB</td>
+        <td style="white-space:nowrap">
+          <a class="btn sm ghost" href="/api/backups/${encodeURIComponent(b.filename)}" download>Download</a>
+          <button class="btn sm ghost" data-bkdel="${esc(b.filename)}">×</button>
+        </td></tr>`).join('')}
+    </tbody></table>${backups.length > 6 ? `<p class="muted" style="font-size:12px;margin-top:8px">+ ${backups.length - 6} older</p>` : ''}`
+      : '<div class="empty">No snapshots yet.</div>';
+    el.onclick = async e => {
+      if (!e.target.dataset.bkdel) return;
+      if (!confirm('Delete this snapshot?')) return;
+      await api('backups/' + encodeURIComponent(e.target.dataset.bkdel), 'DELETE');
+      loadBackups();
+    };
+  }
+  loadBackups();
+  $('#bk-now').onclick = async () => {
+    const r = await api('backups', 'POST', {});
+    toast(r.message, 'ok'); loadBackups();
+  };
+};
+
+// go — verify the session first so the console never renders half-signed-in
+(async () => {
+  try { await bootSession(); }
+  catch { return void (location.href = '/login'); }
+  refreshOnClock();
+  setInterval(refreshOnClock, 30000);
+  route();
+})();
