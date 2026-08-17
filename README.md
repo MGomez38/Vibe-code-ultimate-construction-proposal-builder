@@ -55,6 +55,12 @@ One thing to know: only intercompany work sitting inside a **completed** job is 
 
 ## The parts that make you money
 
+**Import your existing price book.** Inventory → **Import price book** takes the Excel file the office already prices from — `.xlsx` or `.csv`, no converting, no template to fill in. It finds the header row itself (row 1 is usually the company name, not the headings), guesses which column is cost and which is sell price, and shows you the first rows with the margin worked out before anything is written. Change any column it guessed wrong and the preview updates.
+
+It reads what real spreadsheets contain: `$1,020.50`, accounting negatives, `9.25/lf`, merged title rows, section dividers, blank spacers, multiple sheets, and formulas — and it tells you which rows it is skipping and why, so a 400-line book that imports 340 names the other 60. Re-importing matches on item number first, then exact name: prices update, new items get added, and **a column that is not in your file is left alone** — dropping the On Hand column from next quarter's price list will not zero out the counts the shop keeps by hand. Items that look like something already in your list under a different name get flagged before they import as a duplicate, and 24ga versus 16ga is not treated as the same item.
+
+Prices land in whichever company you are in, and the quoting engine starts using them on the next quote. There is no dependency behind any of this — the .xlsx is a ZIP of XML and Node opens it directly.
+
 **AI quoting.** Describe the job the way you would say it out loud — "*Frame a 20x30 storage room. 120 2x4 studs 8ft. 14 sheets of 5/8 drywall. 2 pails interior paint. 24 hours framing and hanging*" — and the estimator drafts the line items. It pulls the quantity and unit out of each line, matches it against **your own** priced history and material list, and fills in what you charge for that item, with a note saying where the number came from and how many times you have quoted it. Hours callouts become labor, not material. Anything it has never seen comes back **blank on purpose**, with the question you need answered before the quote goes out.
 
 This works with no API key and no internet — the local engine reads your catalog. Add a key under **Settings → AI Assistant** and the same grounding facts go to the model, which handles long messy scopes more cleanly and writes better line descriptions. Either way, **every price the model returns is re-checked against your catalog before you see it**: if we know what the thing costs, our number replaces theirs and the panel says so ("*The draft suggested $4.25 — your history won*"). A price it claims came from your history that matches nothing gets stripped to blank rather than trusted. A quoting tool that lets a model invent a unit price is a tool that loses money quietly.
@@ -127,9 +133,11 @@ Everything lives under `data/` — the database, uploaded photos, backups, and t
 npm test
 ```
 
-77 tests over `lib/finance.js`, `lib/scope.js`, `lib/nesting.js` and `lib/ai.js` — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
+107 tests over `lib/finance.js`, `lib/scope.js`, `lib/nesting.js`, `lib/ai.js` and the price book reader — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
 
 The AI suite guards the two things in the estimator that cost real money when they break quietly: reading a quantity out of a sentence (`120 2x4 studs 8ft` is 120 studs, not 8), and letting a price onto a quote that did not come from your catalog. It pins the near-miss rejection too — "spiral duct" must not match "duct liner & sealant" on the shared word *duct*, because quoting the wrong item is worse than quoting nothing.
+
+The price book suite covers the import path end to end: money out of a cell (`$1,020.50` is not 1), a cost column that must never land in the price column, an unmapped column reading as absent rather than zero, quoted CSV fields with commas and inch marks in them, and a hand-built ZIP that exercises the .xlsx reader down to a gap in the columns staying a gap.
 
 ## Security notes
 

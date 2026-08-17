@@ -23,6 +23,15 @@ const { readUpload, storeFile, removeFile, UPLOAD_DIR } = require('./lib/uploads
 const backup = require('./lib/backup');
 const nesting = require('./lib/nesting');
 const ai = require('./lib/ai');
+const xlsx = require('./lib/xlsx');
+const PB = require('./lib/pricebook');
+
+/**
+ * Uploaded price books held in memory between the preview and the import,
+ * so the office can remap a column without re-picking the file. Dropped
+ * after 30 minutes, and on restart — nothing here is worth persisting.
+ */
+const PENDING_IMPORTS = new Map();
 const T = require('./templates');
 
 const PORT = process.env.PORT || 3000;
@@ -913,6 +922,36 @@ function benchmark(draft, scope) {
   return { totals, target_margin_pct: target, labor_accuracy: accuracy, similar_jobs: similar.slice(0, 5), warnings };
 }
 
+/**
+ * Items in the spreadsheet that already exist here under a different name.
+ * The import links by SKU and by exact name, so "20ga Galvanized Sheet 4x10"
+ * and "Galvanized Sheet 20ga 4x10" would import as two rows for one thing —
+ * and a duplicated catalog is how a quote gets priced off the stale copy.
+ */
+function nearDuplicates(items, companyId) {
+  const existing = db.prepare('SELECT id, sku, name, unit, unit_cost, sell_price FROM materials WHERE company_id = ?').all(companyId);
+  if (!existing.length) return [];
+  const skus = new Set(existing.filter(m => m.sku).map(m => m.sku.toLowerCase()));
+  const names = new Set(existing.map(m => m.name.toLowerCase().trim()));
+  const match = ai.buildMatcher(existing.map(m => ({ desc: m.name, unit: m.unit, ref: m })));
+  const out = [];
+  for (const it of items) {
+    if ((it.sku && skus.has(it.sku.toLowerCase())) || names.has(it.name.toLowerCase().trim())) continue;
+    const hit = match(it.name);
+    if (!hit || hit.score < 0.62) continue;
+    const m = hit.entry.ref;
+    // 24ga galvanized and 16ga galvanized share every word but the gauge, and
+    // they are not the same item. If each name carries a spec the other lacks,
+    // this is two products, not one product spelled two ways.
+    const spec = s => new Set(ai.tokens(s).filter(t => /\d/.test(t)));
+    const a = spec(it.name), b = spec(m.name);
+    if ([...a].some(t => !b.has(t)) && [...b].some(t => !a.has(t))) continue;
+    out.push({ incoming: it.name, incoming_price: it.sell_price, existing_id: m.id, existing: m.name, existing_price: m.sell_price });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- AI grounding
 /**
  * Everything the assistant is allowed to price from: this entity's own
@@ -1221,6 +1260,108 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       delete r.hourly_rate;
     }
     return json(res, 200, rows);
+  }
+
+  // ---- price book import ----
+  if (resource === 'pricebook') {
+    if (!scope.activeId) return json(res, 400, { error: 'Pick a company first — a price book belongs to one set of books, not the group.' });
+
+    // Read the upload, work out what is in it, and show the office before touching anything.
+    if (idOrAction === 'preview' && method === 'POST') {
+      try {
+        const { files } = await readUpload(req);
+        const file = files[0];
+        if (!file || !file.data.length) return json(res, 400, { error: 'No file came through' });
+        if (file.data.length > 12 * 1024 * 1024) return json(res, 413, { error: 'That file is over 12 MB — export just the price list sheet and try again.' });
+        const sheets = xlsx.read(file.data, file.original_name || '');
+        const analysis = PB.analyze(sheets);
+        // hand the raw rows back so the office can remap columns without re-uploading
+        const cached = crypto.randomBytes(12).toString('hex');
+        PENDING_IMPORTS.set(cached, { sheets, at: Date.now(), company_id: scope.activeId });
+        for (const [k, v] of PENDING_IMPORTS) if (Date.now() - v.at > 30 * 60000) PENDING_IMPORTS.delete(k);
+        for (const a of analysis) {
+          const built = PB.buildRows((sheets.find(s => s.name === a.name) || {}).rows || [], a.header_index, a.mapping);
+          a.near_duplicates = nearDuplicates(built.items, scope.activeId);
+        }
+        return json(res, 200, { token: cached, filename: file.original_name || 'price book', sheets: analysis, fields: PB.FIELDS });
+      } catch (e) { return json(res, 400, { error: e.message }); }
+    }
+
+    // Re-run the mapping against the already-uploaded file (they changed a column).
+    if (idOrAction === 'remap' && method === 'POST') {
+      const held = PENDING_IMPORTS.get(body.token);
+      if (!held) return json(res, 410, { error: 'That upload expired — please choose the file again.' });
+      const sheet = held.sheets.find(s => s.name === body.sheet) || held.sheets[0];
+      const headerIndex = Number(body.header_index) || 0;
+      const built = PB.buildRows(sheet.rows, headerIndex, body.mapping || {});
+      return json(res, 200, {
+        item_count: built.items.length, skipped_count: built.skipped.length,
+        preview: built.items.slice(0, 8), skipped: built.skipped.slice(0, 10),
+        near_duplicates: nearDuplicates(built.items, scope.activeId),
+      });
+    }
+
+    if (idOrAction === 'import' && method === 'POST') {
+      const held = PENDING_IMPORTS.get(body.token);
+      if (!held) return json(res, 410, { error: 'That upload expired — please choose the file again.' });
+      if (held.company_id !== scope.activeId) return json(res, 409, { error: 'You switched companies since uploading. Upload again from the company the price book belongs to.' });
+      const sheet = held.sheets.find(s => s.name === body.sheet) || held.sheets[0];
+      const { items } = PB.buildRows(sheet.rows, Number(body.header_index) || 0, body.mapping || {});
+      if (!items.length) return json(res, 400, { error: 'No priceable rows in that sheet with those columns' });
+
+      const co = scope.activeId;
+      const bySku = new Map(), byName = new Map();
+      for (const m of db.prepare('SELECT * FROM materials WHERE company_id = ?').all(co)) {
+        if (m.sku) bySku.set(m.sku.toLowerCase(), m);
+        byName.set(m.name.toLowerCase().trim(), m);
+      }
+      const result = { added: 0, updated: 0, unchanged: 0, rows: items.length, changes: [] };
+      const ins = db.prepare(`INSERT INTO materials (company_id, sku, name, category, unit, qty_on_hand, reorder_point, unit_cost, sell_price, location, vendor)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+
+      db.exec('BEGIN');
+      try {
+        for (const it of items) {
+          const existing = (it.sku && bySku.get(it.sku.toLowerCase())) || byName.get(it.name.toLowerCase().trim());
+          if (!existing) {
+            ins.run(co, it.sku, it.name, it.category, it.unit, it.qty_on_hand ?? 0, it.reorder_point ?? 0,
+              it.unit_cost, it.sell_price, it.location, it.vendor);
+            result.added++;
+            continue;
+          }
+          // Only write what the spreadsheet actually carried. An unmapped
+          // on-hand column must never zero out counts the shop maintains here.
+          const set = {};
+          if (it.sku && it.sku !== existing.sku) set.sku = it.sku;
+          if (it.category) set.category = it.category;
+          if (it.unit) set.unit = it.unit;
+          if (it.location) set.location = it.location;
+          if (it.vendor) set.vendor = it.vendor;
+          if (it.unit_cost > 0 && it.unit_cost !== existing.unit_cost) set.unit_cost = it.unit_cost;
+          if (it.sell_price > 0 && it.sell_price !== existing.sell_price) set.sell_price = it.sell_price;
+          if (it.qty_on_hand !== null) set.qty_on_hand = it.qty_on_hand;
+          if (it.reorder_point !== null) set.reorder_point = it.reorder_point;
+
+          const keys = Object.keys(set).filter(k => String(set[k]) !== String(existing[k]));
+          if (!keys.length) { result.unchanged++; continue; }
+          db.prepare(`UPDATE materials SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`)
+            .run(...keys.map(k => set[k]), existing.id);
+          result.updated++;
+          if (set.sell_price !== undefined || set.unit_cost !== undefined) {
+            result.changes.push({ name: existing.name,
+              was_cost: existing.unit_cost, now_cost: set.unit_cost ?? existing.unit_cost,
+              was_price: existing.sell_price, now_price: set.sell_price ?? existing.sell_price });
+          }
+        }
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); return json(res, 500, { error: `Import failed and nothing was changed: ${e.message}` }); }
+
+      PENDING_IMPORTS.delete(body.token);
+      result.changes.sort((a, b) => Math.abs(b.now_price - b.was_price) - Math.abs(a.now_price - a.was_price));
+      result.changes = result.changes.slice(0, 25);
+      auth.audit(user, 'pricebook_imported', `${companyOf(co).code}: ${result.added} added, ${result.updated} updated, ${result.unchanged} unchanged`);
+      return json(res, 200, result);
+    }
   }
 
   // ---- AI estimating assistant ----

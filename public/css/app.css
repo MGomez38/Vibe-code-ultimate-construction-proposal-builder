@@ -631,3 +631,29 @@ a.plain:hover { text-decoration: underline; }
   font-family: inherit; font-size: 13.5px; resize: none; outline: none; line-height: 1.5;
 }
 .aid-foot textarea:focus { border-color: #8b6ff0; box-shadow: 0 0 0 3px rgba(139,111,240,.16); }
+
+/* price book import */
+.drop {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer;
+  border: 2px dashed var(--line); border-radius: 12px; padding: 28px 18px; text-align: center;
+  background: #fbfcfa; transition: border-color .15s, background .15s;
+}
+.drop:hover, .drop.over { border-color: var(--amber); background: #fffdf7; }
+.drop-big { font-size: 15px; font-weight: 750; }
+.imp-file { font-size: 13px; font-weight: 650; margin: 14px 0 4px; }
+.imp-file select { padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; font-family: inherit; font-size: 13px; }
+.imp-map { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.imp-map .fld { margin: 0; }
+.imp-stats { font-size: 13px; color: var(--steel); padding: 14px 0 8px; }
+.imp-stats b { color: var(--ink); }
+.imp-stats b.warn { color: #a06a00; }
+.imp-preview { font-size: 12.5px; }
+.imp-preview tr.unpriced td { background: #fffaf0; }
+.imp-done h3 { font-size: 16px; margin: 8px 0 12px; }
+.imp-done h5 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--mist); margin: 16px 0 6px; }
+.imp-tally { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 6px; }
+.imp-tally div {
+  background: var(--paper); border-radius: 10px; padding: 14px; text-align: center;
+}
+.imp-tally b { display: block; font-size: 26px; font-weight: 800; }
+.imp-tally span { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--mist); font-weight: 700; }

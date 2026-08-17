@@ -1461,6 +1461,7 @@ PAGES.inventory = async () => {
       <div class="filters" id="m-filters">${cats.map((c, i) => `<span class="chip ${i === 0 ? 'active' : ''}" data-f="${esc(c)}">${esc(cap(c))}</span>`).join('')}</div>
       <div>
         <button class="btn ghost" id="m-low">⚠ Low stock only</button>
+        <button class="btn ghost" id="m-import">⬆ Import price book</button>
         <button class="btn primary" id="m-new">+ Add Material</button>
       </div>
     </div>
@@ -1488,6 +1489,7 @@ PAGES.inventory = async () => {
     }).join('') : '<tr><td colspan="10"><div class="empty">No materials match.</div></td></tr>';
   }
   renderRows();
+  $('#m-import').onclick = () => importModal();
   $('#m-filters').onclick = e => {
     const c = e.target.closest('.chip'); if (!c) return;
     $$('#m-filters .chip').forEach(x => x.classList.remove('active'));
@@ -1496,6 +1498,158 @@ PAGES.inventory = async () => {
   $('#m-low').onclick = e => { lowOnly = !lowOnly; e.target.classList.toggle('primary', lowOnly); renderRows(); };
   $('#m-new').onclick = () => matModal();
   $('#m-body').onclick = e => { if (e.target.dataset.edit) matModal(materials.find(m => m.id === +e.target.dataset.edit)); };
+
+  /**
+   * Import the price book the office already keeps in Excel.
+   * Three steps, and nothing is written until the last one: pick the file,
+   * confirm which column is which, then see exactly what changed.
+   */
+  function importModal() {
+    let state = null;                 // {token, sheets, fields, sheet, header_index, mapping}
+    openModal(`
+      <div class="modal-head"><h2>Import your price book</h2><button class="modal-close">×</button></div>
+      <div class="modal-body" id="imp-body">
+        <p class="muted" style="line-height:1.6;margin-bottom:14px">
+          Upload the spreadsheet you already price from — <b>.xlsx</b> or <b>.csv</b>. It reads the columns,
+          shows you what it found, and only writes once you say so. Prices land in
+          <b>${esc(ME?.scope?.active?.name || 'this company')}</b> and the quoting engine starts using them immediately.
+        </p>
+        <label class="drop" id="imp-drop">
+          <input type="file" id="imp-file" accept=".xlsx,.csv,.tsv,.txt" hidden>
+          <span class="drop-big">Choose a file</span>
+          <span class="muted">or drag it here</span>
+        </label>
+        <div id="imp-out"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="imp-go" disabled>Import</button>
+      </div>`);
+
+    const out = () => $('#imp-out');
+    $('#imp-drop').onclick = () => $('#imp-file').click();
+    $('#imp-drop').ondragover = e => { e.preventDefault(); $('#imp-drop').classList.add('over'); };
+    $('#imp-drop').ondragleave = () => $('#imp-drop').classList.remove('over');
+    $('#imp-drop').ondrop = e => {
+      e.preventDefault(); $('#imp-drop').classList.remove('over');
+      if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+    };
+    $('#imp-file').onchange = e => e.target.files[0] && upload(e.target.files[0]);
+
+    async function upload(file) {
+      out().innerHTML = '<div class="ai-thinking">Reading the spreadsheet…</div>';
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/pricebook/preview', { method: 'POST', body: fd });
+      const d = await r.json();
+      if (!r.ok) return void (out().innerHTML = `<div class="est-warn high"><h5>Could not read that file</h5><p>${esc(d.error)}</p></div>`);
+      const first = d.sheets[0];
+      state = { token: d.token, sheets: d.sheets, fields: d.fields, filename: d.filename,
+        sheet: first.name, header_index: first.header_index, mapping: { ...first.mapping } };
+      renderMapping(first);
+    }
+
+    function current() { return state.sheets.find(s => s.name === state.sheet) || state.sheets[0]; }
+
+    function renderMapping(res) {
+      const sheet = current();
+      const fk = Object.keys(state.fields);
+      out().innerHTML = `
+        <div class="imp-file">📄 ${esc(state.filename)}${state.sheets.length > 1 ? `
+          — sheet <select id="imp-sheet">${state.sheets.map(s => `<option ${s.name === state.sheet ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
+        </div>
+        ${sheet.stale_formulas ? `<div class="est-warn medium"><h5>${sheet.stale_formulas} cell${sheet.stale_formulas === 1 ? ' contains' : 's contain'} a formula with no saved result</h5>
+          <p>Open the file in Excel and save it again so the calculated prices come through — otherwise those rows import blank.</p></div>` : ''}
+        <h3 style="font-size:13px;margin:16px 0 4px">Which column is which</h3>
+        <p class="muted" style="font-size:12.5px;margin-bottom:10px">Row ${sheet.header_index + 1} looks like your headings. Change anything it guessed wrong.</p>
+        <div class="imp-map">
+          ${fk.map(k => `<label class="fld">${esc(state.fields[k].label)}
+            <select data-map="${k}">
+              <option value="">— not in my file —</option>
+              ${sheet.headers.map((h, i) => `<option value="${i}" ${String(state.mapping[k]) === String(i) ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`).join('')}
+            </select></label>`).join('')}
+        </div>
+        <div class="imp-stats" id="imp-stats">${statsFor(res)}</div>
+        <table class="tbl imp-preview"><thead><tr><th>Item #</th><th>Description</th><th>Unit</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Margin</th></tr></thead>
+          <tbody>${(res.preview || []).map(p => {
+            const m = p.sell_price > 0 ? Math.round((p.sell_price - p.unit_cost) / p.sell_price * 1000) / 10 : null;
+            return `<tr class="${p.no_price ? 'unpriced' : ''}">
+              <td class="mono muted">${esc(p.sku)}</td><td class="strong">${esc(p.name)}</td><td class="muted">${esc(p.unit)}</td>
+              <td class="num">${money(p.unit_cost)}</td><td class="num">${p.sell_price ? money(p.sell_price) : '—'}</td>
+              <td class="num ${m !== null && m < 15 ? 'stock-low' : ''}">${m === null ? '—' : m + '%'}</td></tr>`;
+          }).join('')}</tbody></table>
+        ${(res.near_duplicates || []).length ? `<div class="est-warn medium">
+          <h5>${res.near_duplicates.length} item${res.near_duplicates.length === 1 ? '' : 's'} may already be in your list under a different name</h5>
+          <p>These will import as new rows. If they are the same thing, rename one side to match before importing — two rows for one item means half your quotes get the stale price.</p>
+          <ul style="margin:8px 0 0 18px;font-size:12.5px;line-height:1.7;color:var(--steel)">
+            ${res.near_duplicates.map(d => `<li><b>${esc(d.incoming)}</b> ${money(d.incoming_price)}
+              <span class="muted">vs. existing</span> <b>${esc(d.existing)}</b> ${money(d.existing_price)}</li>`).join('')}
+          </ul></div>` : ''}
+        ${(res.skipped || []).length ? `<div class="ai-notes"><h5>Rows that will be skipped${res.skipped_count > res.skipped.length ? ` (first ${res.skipped.length} of ${res.skipped_count})` : ''}</h5>
+          <ul>${res.skipped.map(s => `<li>Row ${s.row}: ${esc(String(s.text).slice(0, 60))} — ${esc(s.reason)}</li>`).join('')}</ul></div>` : ''}`;
+
+      $('#imp-go').disabled = !res.item_count;
+      $('#imp-go').textContent = res.item_count ? `Import ${res.item_count} item${res.item_count === 1 ? '' : 's'}` : 'Nothing to import';
+
+      const sel = $('#imp-sheet');
+      if (sel) sel.onchange = e => {
+        const s = state.sheets.find(x => x.name === e.target.value);
+        state.sheet = s.name; state.header_index = s.header_index; state.mapping = { ...s.mapping };
+        renderMapping(s);
+      };
+      $$('[data-map]').forEach(el => { el.onchange = remap; });
+    }
+
+    function statsFor(res) {
+      const unpriced = (res.preview || []).filter(p => p.no_price).length;
+      return `<b>${res.item_count}</b> item${res.item_count === 1 ? '' : 's'} ready`
+        + (res.skipped_count ? ` · <b>${res.skipped_count}</b> row${res.skipped_count === 1 ? '' : 's'} skipped` : '')
+        + (unpriced ? ` · <b class="warn">${unpriced}</b> in this preview have no sell price` : '');
+    }
+
+    async function remap() {
+      const mapping = {};
+      $$('[data-map]').forEach(el => { if (el.value !== '') mapping[el.dataset.map] = Number(el.value); });
+      state.mapping = mapping;
+      const r = await api('pricebook/remap', 'POST', { token: state.token, sheet: state.sheet, header_index: state.header_index, mapping });
+      const sheet = current();
+      Object.assign(sheet, r);
+      renderMapping(r);
+    }
+
+    $('#imp-go').onclick = async () => {
+      if (!state) return;
+      const btn = $('#imp-go'); btn.disabled = true; btn.textContent = 'Importing…';
+      try {
+        const r = await api('pricebook/import', 'POST', {
+          token: state.token, sheet: state.sheet, header_index: state.header_index, mapping: state.mapping,
+        });
+        out().innerHTML = `
+          <div class="imp-done">
+            <h3>Price book imported</h3>
+            <div class="imp-tally">
+              <div><b>${r.added}</b><span>added</span></div>
+              <div><b>${r.updated}</b><span>updated</span></div>
+              <div><b>${r.unchanged}</b><span>already matched</span></div>
+            </div>
+            ${r.changes.length ? `<h5>Biggest price changes</h5>
+              <table class="tbl"><thead><tr><th>Item</th><th class="num">Cost</th><th class="num">Price</th></tr></thead><tbody>
+              ${r.changes.map(c => `<tr><td>${esc(c.name)}</td>
+                <td class="num">${c.was_cost !== c.now_cost ? `<span class="muted">${money(c.was_cost)}</span> → <b>${money(c.now_cost)}</b>` : money(c.now_cost)}</td>
+                <td class="num">${c.was_price !== c.now_price ? `<span class="muted">${money(c.was_price)}</span> → <b>${money(c.now_price)}</b>` : money(c.now_price)}</td>
+              </tr>`).join('')}</tbody></table>` : ''}
+            <p class="muted" style="margin-top:12px;line-height:1.6">Your quoting engine is already using these prices. A backup was written before today's changes — Settings → Backups if you need to go back.</p>
+          </div>`;
+        $('#imp-drop').style.display = 'none';
+        btn.textContent = 'Done'; btn.disabled = false;
+        btn.onclick = () => { closeModal(); route(); };
+        toast(`${r.added} added, ${r.updated} updated`, 'ok');
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false; btn.textContent = 'Import';
+      }
+    };
+  }
 
   function matModal(m) {
     openModal(`
