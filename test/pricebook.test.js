@@ -99,17 +99,51 @@ describe('turning rows into materials', () => {
     assert.equal(items[0].sell_price, 9.25);
   });
 
-  test('a section divider is skipped and said so', () => {
-    const { items, skipped } = buildRows([header, ['', 'SHEET METAL', '', '', ''], ['AS-1', 'Duct', 'lf', '1', '2']], 0, mapping);
+  test('a section divider becomes the category for the rows under it', () => {
+    const { items } = buildRows([header,
+      ['', 'SHEET METAL', '', '', ''],
+      ['AS-1', 'Duct', 'lf', '1', '2'],
+    ], 0, mapping);
     assert.equal(items.length, 1);
-    assert.equal(skipped[0].reason, 'looks like a section heading');
-    assert.equal(skipped[0].row, 2, 'the row number is the one shown in Excel');
+    assert.equal(items[0].category, 'SHEET METAL');
+  });
+
+  test('the same description under two sections stays two products', () => {
+    // A price book lists 26ga 48"x120" under Galvanized and again under
+    // Bonderized. They are different metal at different prices; importing
+    // them under one name means one of the two silently wins.
+    const { items } = buildRows([header,
+      ['', 'Galvanized', '', '', ''],
+      ['', '26ga 48x120', 'sheet', '42.55', '85.10'],
+      ['', 'Bonderized', '', '', ''],
+      ['', '26ga 48x120', 'sheet', '51.00', '102.00'],
+    ], 0, mapping);
+    assert.equal(items.length, 2);
+    assert.notEqual(items[0].name, items[1].name, 'the names must not collide');
+    assert.match(items[0].name, /Galvanized/);
+    assert.match(items[1].name, /Bonderized/);
+    assert.equal(items[0].unit_cost, 42.55);
+    assert.equal(items[1].unit_cost, 51);
   });
 
   test('a row with no money at all is skipped, not imported at zero', () => {
-    const { items, skipped } = buildRows([header, ['AS-9', 'Call for pricing', 'ea', '', '']], 0, mapping);
+    const { items, skipped } = buildRows([header, ['AS-9', 'Call for pricing', 'ea', '', 'x']], 0, mapping);
     assert.equal(items.length, 0);
     assert.equal(skipped[0].reason, 'no cost and no price');
+  });
+
+  test('a placeholder row priced at zero is refused', () => {
+    // Real price books carry rows for products nobody has costed yet.
+    // Importing those at $0 puts a free line item one click from a customer.
+    const { items, skipped } = buildRows([header, ['AS-9', 'Not costed yet', 'ea', '0', '0']], 0, mapping);
+    assert.equal(items.length, 0);
+    assert.equal(skipped[0].reason, 'priced at zero');
+  });
+
+  test('a grade column joins the description', () => {
+    const { items } = buildRows([header, ['', '26ga 48x120', 'sheet', '42.55', '85.10', 'GALV']], 0,
+      { ...mapping, name_extra: 5 });
+    assert.equal(items[0].name, '26ga 48x120 GALV');
   });
 
   test('blank spacer rows are ignored silently', () => {

@@ -203,7 +203,7 @@ const validEmail = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(e || '').trim()
 const RESOURCES = {
   clients:   { table: 'clients',   fields: ['name', 'contact', 'phone', 'email', 'address', 'notes'] },
   employees: { table: 'employees', fields: ['name', 'role', 'phone', 'email', 'hourly_rate', 'pin', 'active', 'classification', 'fringe_rate'] },
-  materials: { table: 'materials', fields: ['sku', 'name', 'category', 'unit', 'qty_on_hand', 'reorder_point', 'unit_cost', 'sell_price', 'location', 'vendor'] },
+  materials: { table: 'materials', fields: ['sku', 'name', 'category', 'unit', 'qty_on_hand', 'reorder_point', 'unit_cost', 'sell_price', 'location', 'vendor', 'priced_on'] },
   quotes:    { table: 'quotes',    fields: ['quote_number', 'client_id', 'title', 'description', 'items', 'labor_hours', 'labor_rate', 'markup_pct', 'tax_pct', 'status', 'valid_until', 'notes'] },
   jobs:      { table: 'jobs',      fields: ['job_number', 'client_id', 'quote_id', 'title', 'description', 'address', 'status', 'sold_price', 'start_date', 'end_date', 'foreman_id', 'notes', 'completed_at', 'prevailing_wage', 'est_labor_hours'] },
   workorders:{ table: 'work_orders', fields: ['wo_number', 'job_id', 'client_id', 'title', 'description', 'wo_type', 'priority', 'status', 'assigned_to', 'due_date', 'items', 'labor_hours', 'labor_rate', 'sold_price', 'notes', 'completed_at'] },
@@ -978,7 +978,8 @@ function aiCatalog(scope) {
   }));
   for (const m of db.prepare(`SELECT * FROM materials WHERE ${W.sql}`).all(...W.params)) {
     catalog.push({ desc: m.name, unit: m.unit || 'ea', source: 'catalog', times: 0,
-      price: round2(m.sell_price), cost: round2(m.unit_cost), qty_on_hand: m.qty_on_hand, sku: m.sku });
+      price: round2(m.sell_price), cost: round2(m.unit_cost), qty_on_hand: m.qty_on_hand, sku: m.sku,
+      priced_on: m.priced_on || '' });
   }
   // most-quoted first, so a truncated prompt keeps the lines that matter
   return catalog.sort((a, b) => b.times - a.times);
@@ -1287,6 +1288,16 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       } catch (e) { return json(res, 400, { error: e.message }); }
     }
 
+    // The headings live on a different row than we guessed.
+    if (idOrAction === 'headers' && method === 'POST') {
+      const held = PENDING_IMPORTS.get(body.token);
+      if (!held) return json(res, 410, { error: 'That upload expired — please choose the file again.' });
+      const sheet = held.sheets.find(s => s.name === body.sheet) || held.sheets[0];
+      const row = sheet.rows[Number(body.header_index) || 0] || [];
+      const width = sheet.rows.reduce((w, r) => Math.max(w, r.length), 0);
+      return json(res, 200, { headers: Array.from({ length: width }, (_, i) => String(row[i] || '')) });
+    }
+
     // Re-run the mapping against the already-uploaded file (they changed a column).
     if (idOrAction === 'remap' && method === 'POST') {
       const held = PENDING_IMPORTS.get(body.token);
@@ -1316,8 +1327,8 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
         byName.set(m.name.toLowerCase().trim(), m);
       }
       const result = { added: 0, updated: 0, unchanged: 0, rows: items.length, changes: [] };
-      const ins = db.prepare(`INSERT INTO materials (company_id, sku, name, category, unit, qty_on_hand, reorder_point, unit_cost, sell_price, location, vendor)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+      const ins = db.prepare(`INSERT INTO materials (company_id, sku, name, category, unit, qty_on_hand, reorder_point, unit_cost, sell_price, location, vendor, priced_on)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
 
       db.exec('BEGIN');
       try {
@@ -1325,7 +1336,7 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
           const existing = (it.sku && bySku.get(it.sku.toLowerCase())) || byName.get(it.name.toLowerCase().trim());
           if (!existing) {
             ins.run(co, it.sku, it.name, it.category, it.unit, it.qty_on_hand ?? 0, it.reorder_point ?? 0,
-              it.unit_cost, it.sell_price, it.location, it.vendor);
+              it.unit_cost, it.sell_price, it.location, it.vendor, it.priced_on || '');
             result.added++;
             continue;
           }
@@ -1337,6 +1348,7 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
           if (it.unit) set.unit = it.unit;
           if (it.location) set.location = it.location;
           if (it.vendor) set.vendor = it.vendor;
+          if (it.priced_on) set.priced_on = it.priced_on;
           if (it.unit_cost > 0 && it.unit_cost !== existing.unit_cost) set.unit_cost = it.unit_cost;
           if (it.sell_price > 0 && it.sell_price !== existing.sell_price) set.sell_price = it.sell_price;
           if (it.qty_on_hand !== null) set.qty_on_hand = it.qty_on_hand;

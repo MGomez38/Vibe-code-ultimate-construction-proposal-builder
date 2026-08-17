@@ -1453,6 +1453,9 @@ PAGES.workorders = async () => {
 };
 
 // ---------------------------------------------------------------- INVENTORY
+/** A price nobody has confirmed in two years is a number, not a price. */
+const stalePrice = d => Boolean(d) && (Date.now() - Date.parse(d + 'T12:00:00Z')) > 2 * 365.25 * 86400000;
+
 PAGES.inventory = async () => {
   const materials = await api('materials');
   const cats = ['all', ...new Set(materials.map(m => m.category))];
@@ -1466,7 +1469,7 @@ PAGES.inventory = async () => {
       </div>
     </div>
     <div class="card"><table class="tbl"><thead><tr>
-      <th>SKU</th><th>Material</th><th>Category</th><th class="num">On hand</th><th class="num">Reorder at</th><th class="num">Unit cost</th><th class="num">Sell price</th><th>Location</th><th>Vendor</th><th></th>
+      <th>SKU</th><th>Material</th><th>Category</th><th class="num">On hand</th><th class="num">Reorder at</th><th class="num">Unit cost</th><th class="num">Sell price</th><th>Last priced</th><th>Location</th><th>Vendor</th><th></th>
     </tr></thead><tbody id="m-body"></tbody></table></div>`;
 
   let lowOnly = false, cat = 'all';
@@ -1482,11 +1485,12 @@ PAGES.inventory = async () => {
         <td class="num muted">${m.reorder_point}</td>
         <td class="num">${money(m.unit_cost)}</td>
         <td class="num">${money(m.sell_price)}</td>
+        <td class="muted ${stalePrice(m.priced_on) ? 'stock-low' : ''}">${m.priced_on ? esc(m.priced_on) + (stalePrice(m.priced_on) ? ' ⚠' : '') : ''}</td>
         <td class="muted">${esc(m.location)}</td>
         <td class="muted">${esc(m.vendor)}</td>
         <td><button class="btn sm ghost" data-edit="${m.id}">Edit</button></td>
       </tr>`;
-    }).join('') : '<tr><td colspan="10"><div class="empty">No materials match.</div></td></tr>';
+    }).join('') : '<tr><td colspan="11"><div class="empty">No materials match.</div></td></tr>';
   }
   renderRows();
   $('#m-import').onclick = () => importModal();
@@ -1561,7 +1565,10 @@ PAGES.inventory = async () => {
         ${sheet.stale_formulas ? `<div class="est-warn medium"><h5>${sheet.stale_formulas} cell${sheet.stale_formulas === 1 ? ' contains' : 's contain'} a formula with no saved result</h5>
           <p>Open the file in Excel and save it again so the calculated prices come through — otherwise those rows import blank.</p></div>` : ''}
         <h3 style="font-size:13px;margin:16px 0 4px">Which column is which</h3>
-        <p class="muted" style="font-size:12.5px;margin-bottom:10px">Row ${sheet.header_index + 1} looks like your headings. Change anything it guessed wrong.</p>
+        <p class="muted" style="font-size:12.5px;margin-bottom:10px">
+          Headings are on row <input type="number" id="imp-hdr" min="1" max="60" value="${state.header_index + 1}"
+            style="width:62px;padding:4px 6px;display:inline-block"> —
+          change it if that is wrong, then check the columns below. Everything above that row is ignored.</p>
         <div class="imp-map">
           ${fk.map(k => `<label class="fld">${esc(state.fields[k].label)}
             <select data-map="${k}">
@@ -1598,6 +1605,16 @@ PAGES.inventory = async () => {
         renderMapping(s);
       };
       $$('[data-map]').forEach(el => { el.onchange = remap; });
+      // Re-reading the headings from a different row changes what every
+      // dropdown is choosing between, so the whole panel is rebuilt.
+      const hdr = $('#imp-hdr');
+      if (hdr) hdr.onchange = async () => {
+        const n = Math.max(1, Number(hdr.value) || 1) - 1;
+        state.header_index = n;
+        const sh = current();
+        sh.headers = (await api('pricebook/headers', 'POST', { token: state.token, sheet: state.sheet, header_index: n })).headers;
+        await remap();
+      };
     }
 
     function statsFor(res) {
@@ -1663,6 +1680,7 @@ PAGES.inventory = async () => {
         <label class="fld">Reorder point<input name="reorder_point" type="number" step="any" value="${m?.reorder_point ?? 0}"></label>
         <label class="fld">Unit cost $<input name="unit_cost" type="number" step="any" value="${m?.unit_cost ?? 0}"></label>
         <label class="fld">Sell price $<input name="sell_price" type="number" step="any" value="${m?.sell_price ?? 0}"></label>
+        <label class="fld">Last priced<input name="priced_on" type="date" value="${esc(m?.priced_on || '')}"></label>
         <label class="fld">Location<input name="location" value="${esc(m?.location || '')}"></label>
         <label class="fld">Vendor<input name="vendor" value="${esc(m?.vendor || '')}"></label>
       </form></div>
