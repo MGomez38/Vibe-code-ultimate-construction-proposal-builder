@@ -75,9 +75,19 @@ price = (fab_labor × rate + steel + liner_labor × rate + liner) × markup
 
 It pulls your steel price per square foot by gauge, liner by thickness, labor rate by class, markup, and the labor times the shop has recorded per size. Then write the size in plain English — *"6 register taps 20 girth x 12, 18ga, 1\" liner"* — and it prices, at gauges the grid never contained. When steel moves you change one number and every size re-prices.
 
-**Your price book ships with the app.** The All Spec estimating workbook has been decoded into data the app loads on first run — 49 materials, the duct formula with all 170 timed sizes and 5 gauges, and six fitting tables (saddles, uppers, round and square flex, plain and caulked round caps). There is no import step and no spreadsheet in the loop.
+**Your price book ships with the app.** The All Spec estimating workbook has been decoded into data the app loads on first run — 49 materials, the duct formula with all 170 timed sizes and 5 gauges, and 369 priced ell sizes, the transition calculator, and six fitting tables (saddles, uppers, round and square flex, plain and caulked round caps). There is no import step and no spreadsheet in the loop.
 
-**Quoting is a picker.** *Quote Duct & Fittings* in the sidebar: tap what you are quoting, pick the size, say how many, hit **Add to quote**. Lines stack up with a running total; name it, pick the customer, and **Create the quote** makes a real quote you can email. Duct is computed from the formula so any gauge and liner works; everything else comes straight off your own tables. Three taps produced a $479.02 quote in testing.
+**Quoting is a picker.** *Quote Duct & Fittings* in the sidebar: tap what you are quoting, pick the size, say how many, hit **Add to quote**. Lines stack up with a running total; name it, pick the customer, and **Create the quote** makes a real quote you can email. Duct and transitions are computed so any gauge, liner and opening works; ells and the rest come straight off your own tables.
+
+Transitions turned out to be a second calculator with its own rule — the developed area drives a labor band rather than a per-size time:
+
+```
+area  = (widest width + deepest depth) × (2 × length + 12)
+labor = the band that area falls in
+price = (area ÷ 144 × 1.1 × $/sq ft + labor × rate + liner) × markup
+```
+
+Checked against the shop's own worked example — 36×24 into 24×36 over 18" in 24ga — every figure matches: 3456 sq in, 26.4 sq ft, 47 labor units, $68.97 of steel, $117.50 of labor, **$186.47**. Their sheet stops at cost, so the markup shown on top is the one their duct pricing uses, itemised separately so it can be argued with. Three taps produced a $479.02 quote in testing.
 
 The rates behind it stay editable — change the 20ga steel price and all 170 sizes re-price on the spot. Every duct line can be expanded to show exactly where its price came from — steel, labor, liner, markup.
 
@@ -157,7 +167,7 @@ Everything lives under `data/` — the database, uploaded photos, backups, and t
 npm test
 ```
 
-131 tests over `lib/finance.js`, `lib/scope.js`, `lib/nesting.js`, `lib/ai.js`, `lib/duct.js` and the price book reader — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
+137 tests over `lib/finance.js`, `lib/scope.js`, `lib/nesting.js`, `lib/ai.js`, `lib/duct.js` and the price book reader — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
 
 The AI suite guards the two things in the estimator that cost real money when they break quietly: reading a quantity out of a sentence (`120 2x4 studs 8ft` is 120 studs, not 8), and letting a price onto a quote that did not come from your catalog. It pins the near-miss rejection too — "spiral duct" must not match "duct liner & sealant" on the shared word *duct*, because quoting the wrong item is worse than quoting nothing.
 

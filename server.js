@@ -997,6 +997,13 @@ function aiCatalog(scope) {
   return catalog.sort((a, b) => b.times - a.times);
 }
 
+/** Any saved fabrication model for one entity. */
+function fabModel(companyId, kind) {
+  const row = db.prepare('SELECT params FROM fab_models WHERE company_id = ? AND kind = ?').get(companyId, kind);
+  if (!row) return null;
+  try { return JSON.parse(row.params); } catch { return null; }
+}
+
 /** The saved duct formula for one entity, if the office has imported one. */
 function ductModel(companyId) {
   const row = db.prepare('SELECT params FROM fab_models WHERE company_id = ? AND kind = ?').get(companyId, 'duct');
@@ -1426,12 +1433,19 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
     if (method === 'GET') {
       const fittings = db.prepare(`SELECT params FROM fab_models WHERE company_id = ? AND kind = 'fitting'`).all(scope.activeId)
         .map(r => { try { return JSON.parse(r.params); } catch { return null; } }).filter(Boolean);
-      return json(res, 200, m ? { ok: true, model: m, sizes: duct.sizes(m), problems: duct.check(m), fittings }
-        : { ok: false, fittings, message: 'No duct model saved yet. Import your fabrication sheet under Inventory → Import price book → Duct calculator.' });
+      const ells = fabModel(scope.activeId, 'ell');
+      const trans = fabModel(scope.activeId, 'transition');
+      return json(res, 200, m ? { ok: true, model: m, sizes: duct.sizes(m), problems: duct.check(m), fittings, ells, transitions: trans }
+        : { ok: false, fittings, ells, transitions: trans, message: 'No duct model saved yet. Import your fabrication sheet under Inventory → Import price book → Duct calculator.' });
     }
     if (method === 'POST' && idOrAction === 'price') {
       if (!m) return json(res, 400, { error: 'No duct model saved for this company yet.' });
       return json(res, 200, duct.price(m, body));
+    }
+    if (method === 'POST' && idOrAction === 'transition') {
+      const t = fabModel(scope.activeId, 'transition');
+      if (!t) return json(res, 400, { error: 'No transition model saved for this company yet.' });
+      return json(res, 200, duct.transitionPrice(t, body));
     }
     if (method === 'PUT') {
       if (!m) return json(res, 400, { error: 'No duct model saved yet.' });

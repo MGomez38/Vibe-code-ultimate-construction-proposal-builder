@@ -2495,10 +2495,14 @@ PAGES.duct = async () => {
   const liners = m ? Object.keys(m.liner_per_sqft).sort((a, b) => a - b) : [];
 
   // What you can put on a quote. Duct is computed; the rest are your own tables.
+  const ells = d.ells, trans = d.transitions;
   const KINDS = [
     ...(m ? [{ id: 'duct', label: 'Duct / register tap', note: 'any gauge' }] : []),
+    ...(ells ? [{ id: 'ell', label: ells.name, note: `${ells.combos.length} sizes` }] : []),
+    ...(trans ? [{ id: 'trans', label: 'Transition', note: 'any two openings' }] : []),
     ...fittings.map((f, i) => ({ id: 'f' + i, label: f.name, note: `${f.sizes.length} sizes`, fitting: f })),
   ];
+  const ellW = ells ? [...new Set(ells.combos.map(c => c.w))].sort((a, b) => a - b) : [];
 
   const cart = [];
   let kind = KINDS[0].id;
@@ -2531,7 +2535,25 @@ PAGES.duct = async () => {
   function renderPicker() {
     const k = K();
     $$('.kind').forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
-    $('#pick-form').innerHTML = k.fitting
+    const ellHeights = w => ells.combos.filter(c => c.w === w).map(c => c.h).sort((a, b) => a - b);
+    $('#pick-form').innerHTML = k.id === 'ell'
+      ? `<form id="pf" class="form-grid">
+           <label class="fld">Width<select name="w">${ellW.map(w => `<option>${w}"</option>`).join('')}</select></label>
+           <label class="fld">Height<select name="h">${ellHeights(ellW[0]).map(h => `<option>${h}"</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`
+      : k.id === 'trans'
+      ? `<form id="pf" class="form-grid">
+           <label class="fld">Width in<input name="width_in" type="number" step="any" value="36"></label>
+           <label class="fld">Depth in<input name="depth_in" type="number" step="any" value="24"></label>
+           <label class="fld">Width out<input name="width_out" type="number" step="any" value="24"></label>
+           <label class="fld">Depth out<input name="depth_out" type="number" step="any" value="36"></label>
+           <label class="fld">Length<input name="length" type="number" step="any" value="18"></label>
+           <label class="fld">Gauge<select name="gauge">${gauges.map(g => `<option value="${g}" ${g === m.default_gauge ? 'selected' : ''}>${g}ga</option>`).join('')}</select></label>
+           <label class="fld">Liner<select name="liner"><option value="0">None</option>${Object.keys(trans.transition_liner_per_sqft || {}).sort((a, b) => a - b).map(l => `<option value="${l}">${l}"</option>`).join('')}</select></label>
+           <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+         </form>`
+      : k.fitting
       ? `<form id="pf" class="form-grid">
            <label class="fld">Size<select name="size">${k.fitting.sizes.map(s =>
              `<option value="${s.size}">${s.size}${esc(k.fitting.unit || '"')}</option>`).join('')}</select></label>
@@ -2544,7 +2566,14 @@ PAGES.duct = async () => {
            <label class="fld">Liner<select name="liner"><option value="0">None</option>${liners.map(l => `<option value="${l}">${l}"</option>`).join('')}</select></label>
            <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
          </form>`;
-    $('#pf').addEventListener('input', quote);
+    $('#pf').addEventListener('input', e => {
+      // the heights on offer depend on the width
+      if (k.id === 'ell' && e.target.name === 'w') {
+        const w = parseInt($('[name=w]').value);
+        $('[name=h]').innerHTML = ellHeights(w).map(h => `<option>${h}"</option>`).join('');
+      }
+      quote();
+    });
     quote();
   }
 
@@ -2552,6 +2581,9 @@ PAGES.duct = async () => {
     const f = formData($('#pf'));
     const qty = Math.max(1, Number(f.qty) || 1);
     const k = K();
+    if (k.id === 'ell') return { qty, w: parseInt(f.w), h: parseInt(f.h) };
+    if (k.id === 'trans') return { qty, width_in: +f.width_in, depth_in: +f.depth_in, width_out: +f.width_out,
+      depth_out: +f.depth_out, length: +f.length, gauge: f.gauge, liner: Number(f.liner) };
     if (k.fitting) return { qty, size: Number(f.size), fitting: k.fitting };
     return { qty, girth: parseInt(f.girth), length: parseInt(f.length), gauge: f.gauge, liner: Number(f.liner) };
   }
@@ -2561,6 +2593,15 @@ PAGES.duct = async () => {
     if (k.fitting) {
       const hit = k.fitting.sizes.find(x => x.size === s.size);
       return show({ ok: true, price: hit.price, label: `${k.fitting.name} — ${s.size}${k.fitting.unit || '"'}` }, s);
+    }
+    if (k.id === 'ell') {
+      const hit = ells.combos.find(c => c.w === s.w && c.h === s.h);
+      return show(hit ? { ok: true, price: hit.price, label: `Ell ${s.w}" × ${s.h}"` }
+        : { ok: false, error: `No price on file for a ${s.w}" × ${s.h}" ell.` }, s);
+    }
+    if (k.id === 'trans') {
+      const r = await api('duct/transition', 'POST', s);
+      return show(r.ok ? { ...r, label: `Transition ${s.width_in}×${s.depth_in} to ${s.width_out}×${s.depth_out}, ${s.length}" long — ${s.gauge}ga${s.liner ? `, ${s.liner}" liner` : ''}` } : r, s);
     }
     const r = await api('duct/price', 'POST', s);
     show(r.ok ? { ...r, label: `Duct ${s.girth}" girth × ${s.length}" — ${s.gauge}ga${s.liner ? `, ${s.liner}" liner` : ''}` } : r, s);
@@ -2578,7 +2619,7 @@ PAGES.duct = async () => {
       ${r.used && !r.used.exact_size ? '<p class="muted" style="font-size:12px;margin-top:8px">That exact size is not timed in your book — priced off the nearest one.</p>' : ''}
       ${r.breakdown ? `<details class="pick-why"><summary>Where the price comes from</summary>
         <table class="tbl dc-break"><tbody>
-          <tr><td>Steel — ${r.breakdown.steel_sqft} sq ft of ${esc(r.used.gauge)}ga</td><td class="num">${money(r.breakdown.steel)}</td></tr>
+          <tr><td>Steel — ${r.breakdown.steel_sqft} sq ft of ${esc(r.used.gauge)}ga${r.used.area_sq_in ? ` (${r.used.area_sq_in} sq in developed)` : ''}</td><td class="num">${money(r.breakdown.steel)}</td></tr>
           ${r.breakdown.liner_material ? `<tr><td>Liner — ${r.breakdown.liner_sqft} sq ft</td><td class="num">${money(r.breakdown.liner_material)}</td></tr>` : ''}
           <tr><td>Fabrication labor</td><td class="num">${money(r.breakdown.fab_labor)}</td></tr>
           ${r.breakdown.liner_labor ? `<tr><td>Liner labor</td><td class="num">${money(r.breakdown.liner_labor)}</td></tr>` : ''}

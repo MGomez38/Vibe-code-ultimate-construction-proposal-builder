@@ -90,6 +90,61 @@ describe('the price a shop workbook produces', () => {
   });
 });
 
+describe('transitions', () => {
+  // Rates and bands as they stand in the shop's transition sheet.
+  const T = {
+    ...M,
+    transition_bands: [
+      { band: '0-1800', units: 22 }, { band: '1801-2800', units: 30 },
+      { band: '2801-4000', units: 47 }, { band: '4001-6000', units: 56.5 },
+      { band: '6001-8000', units: 66 }, { band: '8001-10000', units: 75 },
+      { band: '10001-12000', units: 82 }, { band: '12001-', units: 90 },
+    ],
+    transition_liner_per_sqft: { 0.5: 1.9833333333333334, 1: 2.4666666666666663, 1.5: 4.766666666666667 },
+  };
+  const EXAMPLE = { width_in: 36, depth_in: 24, width_out: 24, depth_out: 36, length: 18, gauge: 24, liner: 0, labor_class: 'a' };
+
+  test('the developed area matches the shop\'s own worked example', () => {
+    assert.equal(duct.transitionArea(EXAMPLE), 3456);
+  });
+
+  test('area picks the labor band', () => {
+    assert.equal(duct.transitionLabor(T.transition_bands, 3456), 47);
+    assert.equal(duct.transitionLabor(T.transition_bands, 1800), 22, 'the top of a band is inside it');
+    assert.equal(duct.transitionLabor(T.transition_bands, 1801), 30, 'and the next inch is the next band');
+    assert.equal(duct.transitionLabor(T.transition_bands, 99999), 90, 'past the last band, the last band holds');
+  });
+
+  test('the whole calculation reproduces their sheet to the cent', () => {
+    const r = duct.transitionPrice(T, EXAMPLE);
+    assert.equal(r.ok, true);
+    assert.equal(r.breakdown.steel_sqft, 26.4);
+    assert.equal(r.breakdown.steel, 68.97);
+    assert.equal(r.breakdown.fab_labor, 117.5);
+    assert.equal(r.breakdown.subtotal, 186.47, 'this is the number their workbook prints');
+  });
+
+  test('the bigger opening drives the metal, whichever end it is on', () => {
+    // A transition narrowing 36→24 and one widening 24→36 are the same
+    // piece of metal. Reading only the inlet would underprice one of them.
+    const a = duct.transitionArea({ width_in: 36, depth_in: 24, width_out: 24, depth_out: 36, length: 18 });
+    const b = duct.transitionArea({ width_in: 24, depth_in: 36, width_out: 36, depth_out: 24, length: 18 });
+    assert.equal(a, b);
+  });
+
+  test('length moves the price and gauge moves the price', () => {
+    const short = duct.transitionPrice(T, EXAMPLE).price;
+    const long = duct.transitionPrice(T, { ...EXAMPLE, length: 36 }).price;
+    const heavy = duct.transitionPrice(T, { ...EXAMPLE, gauge: 18 }).price;
+    assert.ok(long > short);
+    assert.ok(heavy > short);
+  });
+
+  test('a transition with no size is refused', () => {
+    assert.equal(duct.transitionPrice(T, { length: 18, gauge: 24 }).ok, false);
+  });
+});
+
 describe('reading a duct line out of English', () => {
   test('girth, length, gauge and liner all come off', () => {
     assert.deepEqual(ductSpec('register taps 20 girth x 12, 24ga, 1/2" liner'),
