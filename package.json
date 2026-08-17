@@ -1,0 +1,16 @@
+{
+  "name": "dts-command-center",
+  "version": "1.0.0",
+  "description": "Diverse Trade Services — all-in-one construction operations platform: quotes, crew scheduling, inventory, purchasing, work orders, time clock, and profit analytics.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

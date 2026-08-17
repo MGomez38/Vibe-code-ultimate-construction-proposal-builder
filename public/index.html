@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DTS Command Center — Diverse Trade Services</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%23131c26'/><path d='M22 70 L50 26 L78 70 Z' fill='none' stroke='%23f5a524' stroke-width='9' stroke-linejoin='round'/><rect x='42' y='56' width='16' height='14' fill='%23f5a524'/></svg>">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 100 100" width="34" height="34"><rect width="100" height="100" rx="18" fill="#131c26"/><path d="M22 70 L50 26 L78 70 Z" fill="none" stroke="#f5a524" stroke-width="9" stroke-linejoin="round"/><rect x="42" y="56" width="16" height="14" fill="#f5a524"/></svg>
+      </div>
+      <div class="brand-text">
+        <span class="brand-name">DTS</span>
+        <span class="brand-sub">Command Center</span>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <span class="nav-section">Operations</span>
+      <a href="#/dashboard" data-route="dashboard"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg>Dashboard</a>
+      <a href="#/clock" data-route="clock"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm4.2 14.2L11 13V7h1.5v5.2l4.5 2.7z"/></svg>Time Clock</a>
+      <a href="#/schedule" data-route="schedule"><svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 16H5V10h14zM5 8V6h14v2z"/></svg>Crew Schedule</a>
+
+      <span class="nav-section">Sales</span>
+      <a href="#/quotes" data-route="quotes"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm-1 7V3.5L18.5 9zM8 12h8v2H8zm0 4h8v2H8z"/></svg>Quotes</a>
+      <a href="#/jobs" data-route="jobs"><svg viewBox="0 0 24 24"><path d="M22 8h-4V6a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v2H2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2zM8 6h8v2H8z"/></svg>Job Cards</a>
+      <a href="#/workorders" data-route="workorders"><svg viewBox="0 0 24 24"><path d="M21.7 18.6l-6.5-6.5a5.9 5.9 0 0 0-7.6-7.5L11 8l-3 3-3.4-3.4a5.9 5.9 0 0 0 7.5 7.6l6.5 6.5a1 1 0 0 0 1.4 0l1.7-1.7a1 1 0 0 0 0-1.4z"/></svg>Work Orders</a>
+
+      <span class="nav-section">Supply</span>
+      <a href="#/inventory" data-route="inventory"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>Inventory</a>
+      <a href="#/purchasing" data-route="purchasing"><svg viewBox="0 0 24 24"><path d="M7 18a2 2 0 1 0 2 2 2 2 0 0 0-2-2zm10 0a2 2 0 1 0 2 2 2 2 0 0 0-2-2zM7.2 14.8h9.4a2 2 0 0 0 1.9-1.4L21.6 5H5.2L4.3 2H1v2h2l3.6 9.6-1.4 2.5A2 2 0 0 0 7 19h12v-2H7z"/></svg>Purchasing</a>
+
+      <span class="nav-section">Intelligence</span>
+      <a href="#/archive" data-route="archive"><svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>Archive &amp; Profit</a>
+      <a href="#/insights" data-route="insights"><svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2zM9 20h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z"/></svg>AI Insights</a>
+
+      <span class="nav-section">Directory</span>
+      <a href="#/clients" data-route="clients"><svg viewBox="0 0 24 24"><path d="M16 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm-8 0a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0a8 8 0 0 0-1 .1 4.2 4.2 0 0 1 2 3.4V19h6v-2.5c0-2.3-4.7-3.5-7-3.5z"/></svg>Clients</a>
+      <a href="#/team" data-route="team"><svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-2.7 0-8 1.3-8 4v2h16v-2c0-2.7-5.3-4-8-4z"/></svg>Team</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="live-dot"></div>
+      <span id="on-clock-count">—</span>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="page-heading">
+        <h1 id="page-title">Dashboard</h1>
+        <span id="page-sub" class="page-sub"></span>
+      </div>
+      <div class="topbar-right">
+        <div class="global-search">
+          <svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+          <input id="global-search" type="text" placeholder="Search jobs, work orders, quotes, items…">
+        </div>
+        <div class="topbar-clock" id="topbar-clock"></div>
+      </div>
+    </header>
+    <main id="view" class="view"></main>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="/js/app.js"></script>
+</body>
+</html>
