@@ -1570,17 +1570,21 @@ PAGES.inventory = async () => {
         <div class="imp-modes">
           <button class="imp-mode ${state.mode === 'list' ? 'on' : ''}" data-mode="list">A list of items</button>
           <button class="imp-mode ${state.mode === 'size' ? 'on' : ''}" data-mode="size">A size table</button>
+          <button class="imp-mode ${state.mode === 'duct' ? 'on' : ''}" data-mode="duct">A duct calculator</button>
           <span class="muted" style="font-size:12px">${state.mode === 'size'
             ? 'One row per size with the finished price beside it — saddles, flex, ells, taps.'
+            : state.mode === 'duct'
+            ? 'Reads the formula behind the grid, so any gauge prices — not just the one it was saved at.'
             : 'One row per product — sheet metal, hardware, consumables.'}</span>
         </div>
         ${state.mode === 'size' ? renderSizeControls(sheet) : ''}
-        <h3 style="font-size:13px;margin:16px 0 4px;${state.mode === 'size' ? 'display:none' : ''}">Which column is which</h3>
+        ${state.mode === 'duct' ? '<div id="duct-panel"><div class="ai-thinking">Reading the formula…</div></div>' : ''}
+        <h3 style="font-size:13px;margin:16px 0 4px;${state.mode !== 'list' ? 'display:none' : ''}">Which column is which</h3>
         <p class="muted" style="font-size:12.5px;margin-bottom:10px">
           Headings are on row <input type="number" id="imp-hdr" min="1" max="60" value="${state.header_index + 1}"
             style="width:62px;padding:4px 6px;display:inline-block"> —
           change it if that is wrong, then check the columns below. Everything above that row is ignored.</p>
-        <div class="imp-map" style="${state.mode === 'size' ? 'display:none' : ''}">
+        <div class="imp-map" style="${state.mode !== 'list' ? 'display:none' : ''}">
           ${fk.map(k => `<label class="fld">${esc(state.fields[k].label)}
             <select data-map="${k}">
               <option value="">— not in my file —</option>
@@ -1678,6 +1682,7 @@ PAGES.inventory = async () => {
     }
 
     async function remap() {
+      if (state.mode === 'duct') return remapDuct();
       const mapping = {};
       $$('[data-map]').forEach(el => { if (el.value !== '') mapping[el.dataset.map] = Number(el.value); });
       state.mapping = mapping;
@@ -1693,8 +1698,49 @@ PAGES.inventory = async () => {
       renderMapping(r);
     }
 
+    /** Show what the formula reads out of this sheet before saving it. */
+    async function remapDuct() {
+      renderMapping({ item_count: 0, preview: [], skipped: [] });
+      const box = $('#duct-panel'); if (!box) return;
+      const r = await api('pricebook/duct', 'POST', { token: state.token, sheet: state.sheet, opts: {}, save: false });
+      state.ductReady = !r.problems.length;
+      const m = r.model;
+      const rate = (o, suffix = '') => Object.entries(o).map(([k, v]) => `<b>${esc(k)}${esc(suffix)}</b> $${Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`).join(' · ');
+      box.innerHTML = `
+        ${r.problems.length ? `<div class="est-warn high"><h5>That sheet is not laid out the way this reader expects</h5>
+          <p>Missing ${esc(r.problems.join(', '))}. Pick the sheet your duct grid lives on.</p></div>` : ''}
+        <div class="duct-read">
+          <div><h5>Steel, per square foot</h5>${rate(m.steel_per_sqft, 'ga')}</div>
+          <div><h5>Liner, per square foot</h5>${Object.keys(m.liner_per_sqft).length ? rate(m.liner_per_sqft, '"') : '<span class="muted">none found</span>'}</div>
+          <div><h5>Labor, per unit</h5>${rate(m.labor_rate)}</div>
+          <div><h5>Markup</h5><b>${Math.round((m.markup - 1) * 100)}%</b></div>
+          <div><h5>Sizes timed</h5><b>${r.size_count}</b> — girths ${esc(m.girths.join(', '))}</div>
+          <div><h5>Lengths</h5>${esc(m.lengths.join(', '))}</div>
+        </div>
+        <p class="muted" style="font-size:12.5px;margin-top:10px;line-height:1.6">
+          The labor times come from your grid. Everything else is computed, so when steel moves you change one
+          number and every size re-prices — instead of the grid staying frozen at the gauge it was saved on.</p>`;
+      $('#imp-go').disabled = !state.ductReady;
+      $('#imp-go').textContent = state.ductReady ? `Save this formula (${r.size_count} sizes)` : 'Cannot read that sheet';
+    }
+
     $('#imp-go').onclick = async () => {
       if (!state) return;
+      if (state.mode === 'duct') {
+        const btn = $('#imp-go'); btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+          const r = await api('pricebook/duct', 'POST', { token: state.token, sheet: state.sheet, opts: {}, save: true });
+          out().innerHTML = `<div class="imp-done"><h3>Duct formula saved</h3>
+            <p class="muted" style="line-height:1.6">${r.size_count} sizes, ${Object.keys(r.model.steel_per_sqft).length} gauges,
+            ${Object.keys(r.model.liner_per_sqft).length} liner thicknesses. Quote duct by writing the size —
+            <i>"6 register taps 20 girth x 12, 20ga, 1&quot; liner"</i> — and it prices from these rates.</p></div>`;
+          $('#imp-drop').style.display = 'none';
+          btn.textContent = 'Done'; btn.disabled = false;
+          btn.onclick = () => { closeModal(); route(); };
+          toast('Duct formula saved', 'ok');
+        } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = 'Save this formula'; }
+        return;
+      }
       const btn = $('#imp-go'); btn.disabled = true; btn.textContent = 'Importing…';
       try {
         const r = await api('pricebook/import', 'POST', {

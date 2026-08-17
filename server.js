@@ -25,6 +25,7 @@ const nesting = require('./lib/nesting');
 const ai = require('./lib/ai');
 const xlsx = require('./lib/xlsx');
 const PB = require('./lib/pricebook');
+const duct = require('./lib/duct');
 
 /**
  * Uploaded price books held in memory between the preview and the import,
@@ -996,6 +997,13 @@ function aiCatalog(scope) {
   return catalog.sort((a, b) => b.times - a.times);
 }
 
+/** The saved duct formula for one entity, if the office has imported one. */
+function ductModel(companyId) {
+  const row = db.prepare('SELECT params FROM fab_models WHERE company_id = ? AND kind = ?').get(companyId, 'duct');
+  if (!row) return null;
+  try { const m = JSON.parse(row.params); return duct.check(m).length ? null : m; } catch { return null; }
+}
+
 function aiContext(scope, { title = '', clientId = null } = {}) {
   const cfg = companyOf(scope.activeId);
   const accuracy = laborAccuracy(scope);
@@ -1008,6 +1016,7 @@ function aiContext(scope, { title = '', clientId = null } = {}) {
     target_margin_pct: Number(cfg.target_margin_pct || 30),
     labor_variance_pct: accuracy.avg_variance_pct || 0,
     similar, client: client?.name || '',
+    duct: ductModel(scope.activeId),
   };
 }
 
@@ -1330,6 +1339,23 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       });
     }
 
+    // Read the formula behind a fabrication grid rather than the grid itself.
+    if (idOrAction === 'duct' && method === 'POST') {
+      const held = PENDING_IMPORTS.get(body.token);
+      if (!held) return json(res, 410, { error: 'That upload expired — please choose the file again.' });
+      const sheet = held.sheets.find(s => s.name === body.sheet) || held.sheets[0];
+      const model = duct.extract(sheet.rows, body.opts || {});
+      const problems = duct.check(model);
+      if (body.save) {
+        if (problems.length) return json(res, 400, { error: `That sheet is missing ${problems.join(', ')}.` });
+        db.prepare('DELETE FROM fab_models WHERE company_id = ? AND kind = ?').run(scope.activeId, 'duct');
+        db.prepare('INSERT INTO fab_models (company_id, kind, params) VALUES (?,?,?)')
+          .run(scope.activeId, 'duct', JSON.stringify(model));
+        auth.audit(user, 'duct_model_saved', `${Object.keys(model.labor).length} sizes, ${Object.keys(model.steel_per_sqft).length} gauges`);
+      }
+      return json(res, 200, { model, problems, size_count: Object.keys(model.labor).length });
+    }
+
     if (idOrAction === 'import' && method === 'POST') {
       const held = PENDING_IMPORTS.get(body.token);
       if (!held) return json(res, 410, { error: 'That upload expired — please choose the file again.' });
@@ -1391,6 +1417,27 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       result.changes = result.changes.slice(0, 25);
       auth.audit(user, 'pricebook_imported', `${companyOf(co).code}: ${result.added} added, ${result.updated} updated, ${result.unchanged} unchanged`);
       return json(res, 200, result);
+    }
+  }
+
+  // ---- duct calculator ----
+  if (resource === 'duct') {
+    const m = ductModel(scope.activeId);
+    if (method === 'GET') {
+      return json(res, 200, m ? { ok: true, model: m, sizes: duct.sizes(m), problems: duct.check(m) }
+        : { ok: false, message: 'No duct model saved yet. Import your fabrication sheet under Inventory → Import price book → Duct calculator.' });
+    }
+    if (method === 'POST' && idOrAction === 'price') {
+      if (!m) return json(res, 400, { error: 'No duct model saved for this company yet.' });
+      return json(res, 200, duct.price(m, body));
+    }
+    if (method === 'PUT') {
+      if (!m) return json(res, 400, { error: 'No duct model saved yet.' });
+      const next = { ...m, ...body, labor: m.labor };            // rates are editable, the timings are not
+      db.prepare('UPDATE fab_models SET params = ?, updated_at = ? WHERE company_id = ? AND kind = ?')
+        .run(JSON.stringify(next), now(), scope.activeId, 'duct');
+      auth.audit(user, 'duct_model_updated', Object.keys(body).join(', '));
+      return json(res, 200, { ok: true, model: next });
     }
   }
 
