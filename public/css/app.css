@@ -657,3 +657,9 @@ a.plain:hover { text-decoration: underline; }
 }
 .imp-tally b { display: block; font-size: 26px; font-weight: 800; }
 .imp-tally span { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--mist); font-weight: 700; }
+.imp-modes { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
+.imp-mode {
+  border: 1px solid var(--line); background: #fff; border-radius: 20px; padding: 6px 14px;
+  font-family: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; color: var(--steel);
+}
+.imp-mode.on { background: var(--ink); border-color: var(--ink); color: #fff; }

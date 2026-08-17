@@ -152,3 +152,40 @@ describe('re-grounding whatever a model hands back', () => {
     assert.equal(line.source, 'new');
   });
 });
+
+describe('fittings sized on two axes', () => {
+  const CAT = [
+    { desc: 'Register tap 12" girth × 20"', unit: 'ea', source: 'catalog', times: 0, price: 78.4, cost: 0, qty_on_hand: 0 },
+    { desc: 'Register tap 20" girth × 12"', unit: 'ea', source: 'catalog', times: 0, price: 83.35, cost: 0, qty_on_hand: 0 },
+    { desc: 'Roof saddle 24"', unit: 'ea', source: 'catalog', times: 0, price: 125.21, cost: 0, qty_on_hand: 0 },
+  ];
+  const ctx = { ...CTX, catalog: CAT };
+
+  test('the same two numbers in a different order are different products', () => {
+    // A bag of words cannot tell 20×12 from 12×20 — both contain the same
+    // words and the same numbers. Getting it backwards quotes the wrong tap.
+    const a = localDraft('4 register taps 20" girth x 12"', ctx);
+    const b = localDraft('4 register taps 12" girth x 20"', ctx);
+    assert.equal(a.items[0].desc, 'Register tap 20" girth × 12"');
+    assert.equal(b.items[0].desc, 'Register tap 12" girth × 20"');
+    assert.equal(a.items[0].unit_price, 83.35);
+    assert.equal(b.items[0].unit_price, 78.4);
+  });
+
+  test('a trailing dimension is not swallowed as the quantity', () => {
+    // "3 taps 36 girth x 20" is three taps, not twenty.
+    const d = localDraft('3 register taps 12 girth x 20', ctx);
+    assert.equal(d.items[0].qty, 3);
+  });
+
+  test('a genuine trailing quantity still works', () => {
+    const d = localDraft('roof saddle 24" x 8', ctx);
+    assert.equal(d.items[0].qty, 8, 'no leading number, so the x-form is a count');
+  });
+
+  test('a one-axis fitting matches on its size', () => {
+    const d = localDraft('8 roof saddles 24"', ctx);
+    assert.equal(d.items[0].desc, 'Roof saddle 24"');
+    assert.equal(d.items[0].qty, 8);
+  });
+});

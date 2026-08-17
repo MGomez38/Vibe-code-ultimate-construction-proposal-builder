@@ -1549,7 +1549,10 @@ PAGES.inventory = async () => {
       if (!r.ok) return void (out().innerHTML = `<div class="est-warn high"><h5>Could not read that file</h5><p>${esc(d.error)}</p></div>`);
       const first = d.sheets[0];
       state = { token: d.token, sheets: d.sheets, fields: d.fields, filename: d.filename,
-        sheet: first.name, header_index: first.header_index, mapping: { ...first.mapping } };
+        sheet: first.name, header_index: first.header_index, mapping: { ...first.mapping },
+        mode: 'list', lastColumns: [],
+        size_opts: { name: first.name.replace(/[^A-Za-z0-9 ]/g, '').trim() || 'Item',
+          size_col: 0, price_col: 1, size_unit: '"', unit: 'ea', variant_row: '', last_row: '' } };
       renderMapping(first);
     }
 
@@ -1560,16 +1563,24 @@ PAGES.inventory = async () => {
       const fk = Object.keys(state.fields);
       out().innerHTML = `
         <div class="imp-file">📄 ${esc(state.filename)}${state.sheets.length > 1 ? `
-          — sheet <select id="imp-sheet">${state.sheets.map(s => `<option ${s.name === state.sheet ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
+          — sheet <select id="imp-sheet">${state.sheets.map((s, i) => `<option value="${i}" ${s.name === state.sheet ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
         </div>
         ${sheet.stale_formulas ? `<div class="est-warn medium"><h5>${sheet.stale_formulas} cell${sheet.stale_formulas === 1 ? ' contains' : 's contain'} a formula with no saved result</h5>
           <p>Open the file in Excel and save it again so the calculated prices come through — otherwise those rows import blank.</p></div>` : ''}
-        <h3 style="font-size:13px;margin:16px 0 4px">Which column is which</h3>
+        <div class="imp-modes">
+          <button class="imp-mode ${state.mode === 'list' ? 'on' : ''}" data-mode="list">A list of items</button>
+          <button class="imp-mode ${state.mode === 'size' ? 'on' : ''}" data-mode="size">A size table</button>
+          <span class="muted" style="font-size:12px">${state.mode === 'size'
+            ? 'One row per size with the finished price beside it — saddles, flex, ells, taps.'
+            : 'One row per product — sheet metal, hardware, consumables.'}</span>
+        </div>
+        ${state.mode === 'size' ? renderSizeControls(sheet) : ''}
+        <h3 style="font-size:13px;margin:16px 0 4px;${state.mode === 'size' ? 'display:none' : ''}">Which column is which</h3>
         <p class="muted" style="font-size:12.5px;margin-bottom:10px">
           Headings are on row <input type="number" id="imp-hdr" min="1" max="60" value="${state.header_index + 1}"
             style="width:62px;padding:4px 6px;display:inline-block"> —
           change it if that is wrong, then check the columns below. Everything above that row is ignored.</p>
-        <div class="imp-map">
+        <div class="imp-map" style="${state.mode === 'size' ? 'display:none' : ''}">
           ${fk.map(k => `<label class="fld">${esc(state.fields[k].label)}
             <select data-map="${k}">
               <option value="">— not in my file —</option>
@@ -1579,7 +1590,9 @@ PAGES.inventory = async () => {
         <div class="imp-stats" id="imp-stats">${statsFor(res)}</div>
         <table class="tbl imp-preview"><thead><tr><th>Item #</th><th>Description</th><th>Unit</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Margin</th></tr></thead>
           <tbody>${(res.preview || []).map(p => {
-            const m = p.sell_price > 0 ? Math.round((p.sell_price - p.unit_cost) / p.sell_price * 1000) / 10 : null;
+            // No cost column means no margin to show. Printing 100% because
+            // cost defaulted to zero reads like a windfall.
+            const m = p.sell_price > 0 && p.unit_cost > 0 ? Math.round((p.sell_price - p.unit_cost) / p.sell_price * 1000) / 10 : null;
             return `<tr class="${p.no_price ? 'unpriced' : ''}">
               <td class="mono muted">${esc(p.sku)}</td><td class="strong">${esc(p.name)}</td><td class="muted">${esc(p.unit)}</td>
               <td class="num">${money(p.unit_cost)}</td><td class="num">${p.sell_price ? money(p.sell_price) : '—'}</td>
@@ -1600,11 +1613,22 @@ PAGES.inventory = async () => {
 
       const sel = $('#imp-sheet');
       if (sel) sel.onchange = e => {
-        const s = state.sheets.find(x => x.name === e.target.value);
+        const s = state.sheets[Number(e.target.value)];
+        if (!s) return;
         state.sheet = s.name; state.header_index = s.header_index; state.mapping = { ...s.mapping };
-        renderMapping(s);
+        state.size_opts.name = s.name.replace(/[^A-Za-z0-9 ]/g, '').trim() || 'Item';
+        remap();
       };
       $$('[data-map]').forEach(el => { el.onchange = remap; });
+      $$('[data-mode]').forEach(el => { el.onclick = () => { state.mode = el.dataset.mode; remap(); }; });
+      $$('[data-size]').forEach(el => {
+        el.onchange = () => {
+          const k = el.dataset.size;
+          if (k === 'variant_row_1') state.size_opts.variant_row = el.value === '' ? '' : Math.max(1, Number(el.value)) - 1;
+          else state.size_opts[k] = el.value;
+          remap();
+        };
+      });
       // Re-reading the headings from a different row changes what every
       // dropdown is choosing between, so the whole panel is rebuilt.
       const hdr = $('#imp-hdr');
@@ -1615,6 +1639,35 @@ PAGES.inventory = async () => {
         sh.headers = (await api('pricebook/headers', 'POST', { token: state.token, sheet: state.sheet, header_index: n })).headers;
         await remap();
       };
+    }
+
+    /**
+     * A size table needs four answers: what the thing is called, which column
+     * holds the size, which holds the price, and — when the sheet has a second
+     * axis across the top — which row labels those columns.
+     */
+    function renderSizeControls(sheet) {
+      const o = state.size_opts;
+      const cols = Array.from({ length: sheet.width || (sheet.headers || []).length || 12 },
+        (_, i) => `<option value="${i}">Column ${i + 1}${sheet.headers && sheet.headers[i] ? ' — ' + esc(sheet.headers[i]).slice(0, 22) : ''}</option>`).join('');
+      const sel = (name, val, extra = '') => `<select data-size="${name}">${extra}${cols}</select>`
+        .replace(`<option value="${val}">`, `<option value="${val}" selected>`);
+      return `
+        <div class="imp-map" style="margin-top:12px">
+          <label class="fld">What is it called<input data-size="name" value="${esc(o.name)}" placeholder="Roof saddle"></label>
+          <label class="fld">Size column${sel('size_col', o.size_col)}</label>
+          <label class="fld">Finished price column${sel('price_col', o.price_col)}</label>
+          <label class="fld">Size is measured in<input data-size="size_unit" value="${esc(o.size_unit)}" placeholder="&quot;"></label>
+          <label class="fld">Sold by<input data-size="unit" value="${esc(o.unit)}" placeholder="ea"></label>
+          <label class="fld">Second axis labels on row <span style="font-weight:400">(blank if none)</span>
+            <input data-size="variant_row_1" type="number" min="1" max="200" value="${o.variant_row === '' ? '' : Number(o.variant_row) + 1}"
+              placeholder="none"></label>
+          <label class="fld">Last row <span style="font-weight:400">(blank = to the end)</span>
+            <input data-size="last_row" type="number" min="1" value="${esc(o.last_row || '')}" placeholder="end of sheet"></label>
+        </div>
+        ${state.lastRepeated ? `<div class="est-warn medium"><h5>${state.lastRepeated} size${state.lastRepeated === 1 ? '' : 's'} appear more than once — e.g. ${esc(state.lastRepeatedExample)}</h5>
+          <p>This sheet probably holds more than one table stacked down the page. Set <b>Last row</b> to where the first table ends, import it, then come back for the next one under its own name.</p></div>` : ''}
+        ${(state.lastColumns || []).length > 1 ? `<div class="imp-stats">Second axis found: <b>${state.lastColumns.length}</b> price columns — ${state.lastColumns.slice(0, 8).map(esc).join(', ')}${state.lastColumns.length > 8 ? '…' : ''}</div>` : ''}`;
     }
 
     function statsFor(res) {
@@ -1628,7 +1681,13 @@ PAGES.inventory = async () => {
       const mapping = {};
       $$('[data-map]').forEach(el => { if (el.value !== '') mapping[el.dataset.map] = Number(el.value); });
       state.mapping = mapping;
-      const r = await api('pricebook/remap', 'POST', { token: state.token, sheet: state.sheet, header_index: state.header_index, mapping });
+      const r = await api('pricebook/remap', 'POST', {
+        token: state.token, sheet: state.sheet, header_index: state.header_index, mapping,
+        mode: state.mode, size_opts: state.size_opts,
+      });
+      state.lastColumns = r.columns || [];
+      state.lastRepeated = r.repeated || 0;
+      state.lastRepeatedExample = r.repeated_example || '';
       const sheet = current();
       Object.assign(sheet, r);
       renderMapping(r);
@@ -1640,6 +1699,7 @@ PAGES.inventory = async () => {
       try {
         const r = await api('pricebook/import', 'POST', {
           token: state.token, sheet: state.sheet, header_index: state.header_index, mapping: state.mapping,
+          mode: state.mode, size_opts: state.size_opts,
         });
         out().innerHTML = `
           <div class="imp-done">

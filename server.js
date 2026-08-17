@@ -923,6 +923,17 @@ function benchmark(draft, scope) {
 }
 
 /**
+ * A price book sheet is one of two shapes: a list of things with prices, or
+ * a table of sizes with a price at each one. The office says which.
+ */
+function buildFor(sheet, body, headerIndex) {
+  if (body.mode === 'size') {
+    return PB.buildSizeRows(sheet.rows, { ...(body.size_opts || {}), header_index: headerIndex });
+  }
+  return PB.buildRows(sheet.rows, headerIndex, body.mapping || {});
+}
+
+/**
  * Items in the spreadsheet that already exist here under a different name.
  * The import links by SKU and by exact name, so "20ga Galvanized Sheet 4x10"
  * and "Galvanized Sheet 20ga 4x10" would import as two rows for one thing —
@@ -1284,6 +1295,11 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
           const built = PB.buildRows((sheets.find(s => s.name === a.name) || {}).rows || [], a.header_index, a.mapping);
           a.near_duplicates = nearDuplicates(built.items, scope.activeId);
         }
+        // the size-table UI needs to offer every column, not just the mapped ones
+        for (const a of analysis) {
+          const sh = sheets.find(s => s.name === a.name);
+          a.width = (sh.rows || []).reduce((w, r) => Math.max(w, r.length), 0);
+        }
         return json(res, 200, { token: cached, filename: file.original_name || 'price book', sheets: analysis, fields: PB.FIELDS });
       } catch (e) { return json(res, 400, { error: e.message }); }
     }
@@ -1304,8 +1320,10 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       if (!held) return json(res, 410, { error: 'That upload expired — please choose the file again.' });
       const sheet = held.sheets.find(s => s.name === body.sheet) || held.sheets[0];
       const headerIndex = Number(body.header_index) || 0;
-      const built = PB.buildRows(sheet.rows, headerIndex, body.mapping || {});
+      const built = buildFor(sheet, body, headerIndex);
       return json(res, 200, {
+        columns: (built.columns || []).map(c => c.label),
+        repeated: built.repeated || 0, repeated_example: built.repeated_example || '',
         item_count: built.items.length, skipped_count: built.skipped.length,
         preview: built.items.slice(0, 8), skipped: built.skipped.slice(0, 10),
         near_duplicates: nearDuplicates(built.items, scope.activeId),
@@ -1317,7 +1335,7 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       if (!held) return json(res, 410, { error: 'That upload expired — please choose the file again.' });
       if (held.company_id !== scope.activeId) return json(res, 409, { error: 'You switched companies since uploading. Upload again from the company the price book belongs to.' });
       const sheet = held.sheets.find(s => s.name === body.sheet) || held.sheets[0];
-      const { items } = PB.buildRows(sheet.rows, Number(body.header_index) || 0, body.mapping || {});
+      const { items } = buildFor(sheet, body, Number(body.header_index) || 0);
       if (!items.length) return json(res, 400, { error: 'No priceable rows in that sheet with those columns' });
 
       const co = scope.activeId;
