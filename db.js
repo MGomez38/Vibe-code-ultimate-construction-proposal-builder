@@ -214,6 +214,107 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS change_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  co_number TEXT NOT NULL,
+  job_id INTEGER NOT NULL REFERENCES jobs(id),
+  client_id INTEGER REFERENCES clients(id),
+  title TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  reason TEXT DEFAULT '',            -- client request | unforeseen condition | design change | other
+  items TEXT DEFAULT '[]',
+  labor_hours REAL DEFAULT 0,
+  labor_rate REAL DEFAULT 65,
+  markup_pct REAL DEFAULT 0,
+  tax_pct REAL DEFAULT 0,
+  schedule_days REAL DEFAULT 0,      -- calendar days added to the job
+  status TEXT DEFAULT 'draft',       -- draft | sent | approved | declined
+  public_token TEXT DEFAULT '',
+  sent_at TEXT,
+  responded_at TEXT,
+  client_signature TEXT DEFAULT '',
+  source_card_id INTEGER REFERENCES job_cards(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS invoices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_number TEXT NOT NULL,
+  job_id INTEGER REFERENCES jobs(id),
+  client_id INTEGER REFERENCES clients(id),
+  invoice_type TEXT DEFAULT 'progress',  -- deposit | progress | final
+  description TEXT DEFAULT '',
+  items TEXT DEFAULT '[]',
+  tax_pct REAL DEFAULT 0,
+  retainage_pct REAL DEFAULT 0,
+  status TEXT DEFAULT 'draft',       -- draft | sent | paid | void
+  issue_date TEXT DEFAULT '',
+  due_date TEXT DEFAULT '',
+  terms_days INTEGER DEFAULT 30,
+  sent_at TEXT,
+  public_token TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+  amount REAL NOT NULL,
+  method TEXT DEFAULT 'check',       -- check | ach | card | cash | other
+  reference TEXT DEFAULT '',
+  received_on TEXT NOT NULL,
+  notes TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type TEXT NOT NULL,         -- job_card | job | change_order | sub_document
+  entity_id INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  original_name TEXT DEFAULT '',
+  mime TEXT DEFAULT '',
+  size INTEGER DEFAULT 0,
+  caption TEXT DEFAULT '',
+  uploaded_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS subcontractors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  trade TEXT DEFAULT '',
+  contact TEXT DEFAULT '',
+  phone TEXT DEFAULT '',
+  email TEXT DEFAULT '',
+  license_number TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS sub_documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sub_id INTEGER NOT NULL REFERENCES subcontractors(id),
+  doc_type TEXT DEFAULT 'COI',       -- COI | W-9 | License | Contract | Other
+  carrier TEXT DEFAULT '',
+  policy_number TEXT DEFAULT '',
+  issued_on TEXT DEFAULT '',
+  expires_on TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS job_subs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES jobs(id),
+  sub_id INTEGER NOT NULL REFERENCES subcontractors(id),
+  scope TEXT DEFAULT '',
+  contract_amount REAL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 `);
 
 // ---------------------------------------------------------------- column migrations
@@ -225,6 +326,14 @@ addColumn('quotes', 'public_token', `TEXT DEFAULT ''`);
 addColumn('quotes', 'sent_at', 'TEXT');
 addColumn('quotes', 'responded_at', 'TEXT');
 addColumn('quotes', 'client_signature', `TEXT DEFAULT ''`);
+// prevailing-wage / certified payroll support
+addColumn('employees', 'classification', `TEXT DEFAULT ''`);
+addColumn('employees', 'fringe_rate', 'REAL DEFAULT 0');
+addColumn('jobs', 'prevailing_wage', 'INTEGER DEFAULT 0');
+addColumn('jobs', 'est_labor_hours', 'REAL DEFAULT 0');
+// offline sync de-duplication
+addColumn('time_entries', 'client_ref', `TEXT DEFAULT ''`);
+addColumn('job_cards', 'client_ref', `TEXT DEFAULT ''`);
 
 // ---------------------------------------------------------------- helpers
 function iso(d) { return d.toISOString().replace('T', ' ').slice(0, 19); }
@@ -335,9 +444,9 @@ if (!seeded) {
     insJobMat.run(1, 7, 'Romex 12/2 250ft Roll', 3, 118);
     insJobMat.run(2, 2, '2x6 #2 Pine 10ft', 40, 7.2);
     insJobMat.run(2, 10, 'Deck Screws 3" 5lb', 4, 21);
-    insJobMat.run(4, null, 'Metal studs, drywall, ceiling grid & finishes package', 1, 32400);
-    insJobMat.run(4, null, 'Electrical & data subcontract', 1, 8900);
-    insJobMat.run(5, null, 'Guard rail sections & hardware', 240, 41);
+    insJobMat.run(4, null, 'Metal studs, drywall, ceiling grid & finishes package', 1, 24000);
+    insJobMat.run(4, null, 'Electrical & data subcontract', 1, 6500);
+    insJobMat.run(5, null, 'Guard rail sections & hardware', 240, 37);
 
     const insWO = db.prepare(`INSERT INTO work_orders (wo_number, job_id, client_id, title, description, wo_type, priority, status, assigned_to, due_date, items, labor_hours, labor_rate, sold_price, created_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     // Open shop work orders
@@ -369,30 +478,53 @@ if (!seeded) {
       null, dateStr(-6), daysAgo(9), daysAgo(5), '');
 
     const insSched = db.prepare(`INSERT INTO schedule (employee_id, job_id, date, shift, notes) VALUES (?,?,?,?,?)`);
-    // this week's crew assignments
+    const weekday = (weekOffset, dayIndex) => {
+      const d = new Date();
+      d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + weekOffset * 7 + dayIndex);
+      return d.toISOString().slice(0, 10);
+    };
+    // this week — buildout and deck rebuild, comfortably staffed
     for (let d = 0; d < 5; d++) {
-      insSched.run(2, 1, dateStr(d - new Date().getDay() + 1 + (d >= 5 ? 2 : 0)), 'Full day', '');
+      insSched.run(2, 1, weekday(0, d), 'Full day', d === 0 ? 'Drywall inspection 9am' : '');
+      insSched.run(3, 2, weekday(0, d), 'Full day', d === 0 ? 'Deck framing' : '');
+      insSched.run(6, 2, weekday(0, d), 'Full day', 'Helper');
+      insSched.run(5, null, weekday(0, d), 'Full day', d === 1 ? 'Shop — WO-5123 rush' : 'Shop — WO-5121');
     }
-    insSched.run(3, 2, dateStr(0), 'Full day', 'Deck framing');
-    insSched.run(3, 2, dateStr(1), 'Full day', '');
-    insSched.run(6, 2, dateStr(0), 'Full day', 'Helper');
-    insSched.run(4, 1, dateStr(1), 'AM', 'Rough-in inspection prep');
-    insSched.run(5, null, dateStr(0), 'Full day', 'Shop — WO-5121');
-    insSched.run(5, null, dateStr(1), 'Full day', 'Shop — WO-5123 rush');
+    insSched.run(4, 1, weekday(0, 1), 'AM', 'Rough-in inspection prep');
+    // next week is oversold: the pavilion job was promised to crew already committed
+    // to the buildout — exactly the situation the capacity warning exists to catch
+    for (let d = 0; d < 5; d++) {
+      insSched.run(1, 3, weekday(1, d), 'Full day', 'Pavilion supervision');
+      insSched.run(2, 1, weekday(1, d), 'Full day', '');
+      insSched.run(3, 1, weekday(1, d), 'Full day', '');
+      insSched.run(4, 1, weekday(1, d), 'Full day', '');
+      insSched.run(5, null, weekday(1, d), 'Full day', 'Shop');
+      insSched.run(6, 2, weekday(1, d), 'Full day', '');
+    }
+    insSched.run(2, 3, weekday(1, 0), 'Full day', 'Pavilion post replacement');
+    insSched.run(3, 3, weekday(1, 1), 'Full day', 'Pavilion roof sheathing');
 
     const insTime = db.prepare(`INSERT INTO time_entries (employee_id, job_id, entry_type, clock_in, clock_out, notes) VALUES (?,?,?,?,?,?)`);
-    // historical hours on completed jobs (feeds profit numbers)
-    const histEntries = [
-      [2, 4, 62, 8, 8.5], [3, 4, 62, 8, 8], [6, 4, 62, 8, 8],
-      [2, 4, 63, 8, 9], [3, 4, 63, 8, 8.5],
-      [3, 5, 50, 8, 8], [6, 5, 50, 8, 7.5], [3, 5, 49, 8, 8],
-    ];
-    for (const [emp, job, ago, startH, hours] of histEntries) {
+    // historical hours on completed jobs — real crews over real workdays, so
+    // job costing, payroll and estimate-vs-actual all have something to chew on
+    const punch = (emp, job, ago, startH, hours) => {
       const inT = daysAgo(ago, startH);
       const out = new Date(inT.replace(' ', 'T') + 'Z');
       out.setTime(out.getTime() + hours * 3600e3);
       insTime.run(emp, job, 'job', inT, iso(out), '');
-    }
+    };
+    const seedRun = (jobId, crew, startAgo, workdays) => {
+      let placed = 0;
+      for (let d = 0; placed < workdays && d < workdays * 2; d++) {
+        const ago = startAgo - d;
+        const dow = new Date(Date.now() - ago * 864e5).getDay();
+        if (dow === 0 || dow === 6) continue;      // crews are off weekends
+        for (const emp of crew) punch(emp, jobId, ago, 7, d % 5 === 4 ? 6.5 : 8);
+        placed++;
+      }
+    };
+    seedRun(4, [2, 3, 6], 87, 18);   // Suite 210 tenant improvement
+    seedRun(5, [3, 6], 56, 9);       // warehouse guard rail install
     // recent hours on active jobs
     const recentEntries = [
       [2, 1, 3, 7, 9], [3, 1, 3, 7, 8.5], [2, 1, 2, 7, 9], [4, 1, 2, 8, 6],
@@ -424,6 +556,72 @@ if (!seeded) {
     insCard.run(1, 2, dateStr(-1), 9, 'Framed north and east demising walls, set door bucks for offices 3-6.', '48 studs, 2 boxes screws', '', 'submitted', daysAgo(1, 16));
     insCard.run(2, 3, dateStr(-1), 8.5, 'Demo of old deck complete, hauled debris. Started ledger and footings layout.', 'Dumpster pull #2', 'Two footings hit buried irrigation line — client notified, may need a change order.', 'submitted', daysAgo(1, 17));
 
+    // trade classifications + estimated hours, so estimate-vs-actual has something to learn from
+    const classify = db.prepare('UPDATE employees SET classification = ?, fringe_rate = ? WHERE id = ?');
+    [[1, 'Supervisor', 0], [2, 'Carpenter Foreman', 12.4], [3, 'Carpenter', 12.4],
+     [4, 'Electrician', 15.8], [5, 'Ironworker', 14.1], [6, 'Laborer', 9.7]]
+      .forEach(([id, c, f]) => classify.run(c, f, id));
+    // City of Fairview work is public — flag it for certified payroll
+    db.prepare(`UPDATE jobs SET prevailing_wage = 1 WHERE client_id = 5`).run();
+    // Estimated hours on open jobs are the bid numbers. On completed jobs they are
+    // derived from what was actually clocked, so the demo shows a realistic pattern:
+    // this company bids labor about 12% light.
+    const estHours = db.prepare('UPDATE jobs SET est_labor_hours = ? WHERE id = ?');
+    [[1, 340], [2, 96], [3, 80]].forEach(([id, h]) => estHours.run(h, id));
+    for (const [id, overrun] of [[4, 1.14], [5, 1.09]]) {
+      const actual = db.prepare(`SELECT COALESCE(SUM((julianday(clock_out) - julianday(clock_in)) * 24), 0) h
+        FROM time_entries WHERE job_id = ? AND clock_out IS NOT NULL`).get(id).h;
+      estHours.run(Math.round(actual / overrun), id);
+    }
+
+    const insSub = db.prepare(`INSERT INTO subcontractors (name, trade, contact, phone, email, license_number) VALUES (?,?,?,?,?,?)`);
+    [['Copper Creek Plumbing', 'Plumbing', 'Ray Whitaker', '555-620-1180', 'ray@coppercreekplumbing.com', 'PL-44821'],
+     ['Vertex Electrical', 'Electrical', 'Nina Alvarado', '555-771-3390', 'nina@vertexelec.com', 'EC-90244'],
+     ['Bluepeak Roofing', 'Roofing', 'Owen Doyle', '555-448-2019', 'owen@bluepeakroof.com', 'RF-11208'],
+     ['Granite State Concrete', 'Concrete / Flatwork', 'Hector Salas', '555-993-4471', 'hector@granitestateconcrete.com', 'CN-30177']]
+      .forEach(s => insSub.run(...s));
+
+    const insDoc = db.prepare(`INSERT INTO sub_documents (sub_id, doc_type, carrier, policy_number, issued_on, expires_on, notes) VALUES (?,?,?,?,?,?,?)`);
+    insDoc.run(1, 'COI', 'Hartford', 'GL-8842190', dateStr(-300), dateStr(64), '');
+    insDoc.run(1, 'W-9', '', '', dateStr(-300), '', 'On file');
+    insDoc.run(2, 'COI', 'Travelers', 'GL-2214887', dateStr(-350), dateStr(12), 'Renewal requested — follow up');
+    insDoc.run(3, 'COI', 'Liberty Mutual', 'GL-7781234', dateStr(-400), dateStr(-9), 'EXPIRED — do not schedule until renewed');
+    insDoc.run(4, 'COI', 'Nationwide', 'GL-5590021', dateStr(-120), dateStr(240), '');
+    insDoc.run(4, 'License', '', 'CN-30177', dateStr(-500), dateStr(180), '');
+
+    db.prepare(`INSERT INTO job_subs (job_id, sub_id, scope, contract_amount) VALUES (?,?,?,?)`)
+      .run(1, 2, 'Electrical rough-in and device trim, 3,800 sqft office', 11400);
+
+    // an approved change order on the buildout, and one waiting on the client
+    const insCO = db.prepare(`INSERT INTO change_orders (co_number, job_id, client_id, title, description, reason, items, labor_hours, labor_rate, markup_pct, tax_pct, schedule_days, status, responded_at, client_signature, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    insCO.run('CO-1', 1, 2, 'Add two glass office fronts', 'Client elected to upgrade offices 3 and 4 to full-height glass fronts in lieu of drywall partitions.',
+      'client request', JSON.stringify([{ desc: 'Glass office front system', qty: 2, unit: 'ea', unit_cost: 2850, unit_price: 4400 }]),
+      24, 65, 10, 7.25, 4, 'approved', daysAgo(4, 14), 'Marcus Cole', daysAgo(6, 9));
+    insCO.run('CO-2', 2, 3, 'Reroute irrigation line at footings', 'Two deck footings intersect an undocumented irrigation main. Cap, reroute and re-inspect before pour.',
+      'unforeseen condition', JSON.stringify([{ desc: 'Irrigation reroute materials', qty: 1, unit: 'ls', unit_cost: 310, unit_price: 520 }]),
+      10, 65, 10, 7.25, 2, 'sent', null, '', daysAgo(1, 15));
+
+    const insInv = db.prepare(`INSERT INTO invoices (invoice_number, job_id, client_id, invoice_type, description, items, tax_pct, retainage_pct, status, issue_date, due_date, terms_days, sent_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    // Ironwood buildout — deposit paid, first progress bill outstanding
+    insInv.run('INV-1001', 1, 2, 'deposit', 'Contract deposit — 40% at signing',
+      JSON.stringify([{ desc: 'Deposit, 40% of contract', qty: 1, unit: 'ls', unit_price: 19400 }]), 0, 0, 'sent', dateStr(-9), dateStr(-9), 0, daysAgo(9, 10), daysAgo(9, 10));
+    insInv.run('INV-1002', 1, 2, 'progress', 'Progress billing #1 — framing and rough-in complete (45%)',
+      JSON.stringify([{ desc: 'Work completed to date, 45% of contract', qty: 1, unit: 'ls', unit_price: 21825 },
+                      { desc: 'Approved CO-1 — glass office fronts', qty: 1, unit: 'ls', unit_price: 4400 }]), 0, 10, 'sent', dateStr(-38), dateStr(-8), 30, daysAgo(38, 11), daysAgo(38, 11));
+    // Completed TI — paid in full
+    insInv.run('INV-0994', 4, 1, 'final', 'Final billing — Suite 210 tenant improvement',
+      JSON.stringify([{ desc: 'Contract balance', qty: 1, unit: 'ls', unit_price: 24960 }]), 0, 0, 'paid', dateStr(-60), dateStr(-30), 30, daysAgo(60, 10), daysAgo(60, 10));
+    // Guard rail — overdue
+    insInv.run('INV-0998', 5, 4, 'final', 'Final billing — warehouse guard rail install',
+      JSON.stringify([{ desc: 'Contract total', qty: 1, unit: 'ls', unit_price: 18750 }]), 0, 0, 'sent', dateStr(-47), dateStr(-17), 30, daysAgo(47, 9), daysAgo(47, 9));
+
+    const insPay = db.prepare(`INSERT INTO payments (invoice_id, amount, method, reference, received_on, notes) VALUES (?,?,?,?,?,?)`);
+    insPay.run(1, 19400, 'check', '#48221', dateStr(-7), 'Deposit received');
+    insPay.run(3, 24960, 'ach', 'ACH-99120', dateStr(-34), '');
+    insPay.run(4, 9000, 'check', '#7742', dateStr(-20), 'Partial — balance promised end of month');
+
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('default_retainage_pct', '10')`).run();
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('payment_terms_days', '30')`).run();
     db.prepare(`INSERT INTO settings (key, value) VALUES ('seeded', '1')`).run();
   };
   db.exec('BEGIN');

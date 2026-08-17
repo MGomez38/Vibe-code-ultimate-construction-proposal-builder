@@ -74,11 +74,16 @@ async function refreshOnClock() {
     $('#on-clock-count').textContent = `${open.length} on the clock`;
   } catch { /* ignore */ }
 }
-async function refreshCardsBadge() {
+async function refreshBadges() {
   try {
-    const cards = await api('jobcards');
-    const n = cards.filter(c => c.status === 'submitted').length;
-    $('#cards-badge').textContent = n || '';
+    const [cards, cos, aging, subs] = await Promise.all([
+      api('jobcards'), api('changeorders'), api('invoices/aging'), api('subcontractors'),
+    ]);
+    const set = (sel, n) => { const el = $(sel); if (el) el.textContent = n || ''; };
+    set('#cards-badge', cards.filter(c => c.status === 'submitted').length);
+    set('#co-badge', cos.filter(c => c.status === 'sent').length);
+    set('#ar-badge', aging.open.filter(o => o.days_overdue > 0).length);
+    set('#sub-badge', subs.filter(s => s.active && !s.compliant).length);
   } catch { /* ignore */ }
 }
 
@@ -118,6 +123,10 @@ const TITLES = {
   jobs: ['Jobs', 'Active and planned field work'],
   workorders: ['Work Orders', 'Shop and fabrication queue'],
   jobcards: ['Field Job Cards', 'Daily reports submitted by the crew'],
+  changeorders: ['Change Orders', 'Added scope, priced and signed before you build it'],
+  invoices: ['Invoices & Receivables', 'What you have billed and what you are owed'],
+  payroll: ['Payroll', 'Hours, gross pay and certified payroll for public work'],
+  subs: ['Subcontractors', 'Trades, insurance certificates and expiry dates'],
   reports: ['Reports', 'Where the money comes from and where it goes'],
   users: ['Users & Access', 'Who can sign in, and what they can see'],
   settings: ['Settings', 'Company details, pricing defaults and email delivery'],
@@ -139,7 +148,7 @@ async function route() {
   $$('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === page));
   view.innerHTML = '<div class="empty">Loading…</div>';
   try { await fn(param); } catch (e) { view.innerHTML = `<div class="empty">⚠ ${esc(e.message)}</div>`; }
-  refreshCardsBadge();
+  refreshBadges();
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
@@ -257,10 +266,32 @@ PAGES.dashboard = async () => {
       </tbody></table>` : '<div class="empty">No jobs in progress.</div>'}
     </div>
 
+    <div class="grid grid-2 section-gap">
+      <div class="card">
+        <h3>Money Owed To You <span class="hint">accounts receivable</span></h3>
+        <div class="kpis" style="grid-template-columns:1fr 1fr;margin:0">
+          <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Outstanding</div><div class="kpi-value">${money0(k.arOutstanding)}</div><div class="kpi-note"><a class="plain" href="#/invoices">invoices →</a></div></div>
+          <div class="kpi" style="--kpi-accent:${k.arOverdue ? '#d64545' : '#2e9e6b'}"><div class="kpi-label">Past Due</div><div class="kpi-value ${k.arOverdue ? 'neg' : ''}">${money0(k.arOverdue)}</div><div class="kpi-note">${k.arOverdue ? 'chase these today' : 'nothing overdue'}</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Crew Capacity <span class="hint">next three weeks</span></h3>
+        ${d.capacity.map(w => `
+          <div class="bar-row">
+            <span class="lbl">Week of ${new Date(w.week_start + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+            <span class="track"><i class="${w.overcommitted ? 'bad' : w.utilization_pct > 85 ? 'warn' : ''}" style="width:${Math.min(100, w.utilization_pct)}%;background:${w.overcommitted ? 'var(--red)' : w.utilization_pct > 85 ? 'var(--amber)' : 'var(--ink)'}"></i></span>
+            <span class="val">${w.committed_hours}/${w.available_hours}h</span>
+          </div>
+          ${w.overcommitted ? `<div class="muted" style="font-size:12px;margin:-4px 0 8px 178px;color:var(--red)">Overcommitted${w.conflicts.length ? ` · ${w.conflicts.length} double-booking${w.conflicts.length > 1 ? 's' : ''}` : ''}</div>` : ''}
+        `).join('')}
+        <a class="plain" href="#/schedule" style="font-size:12.5px">open the schedule →</a>
+      </div>
+    </div>
+
     <div class="kpis section-gap">
       <div class="kpi" style="--kpi-accent:${k.lowStock ? '#d64545' : '#2e9e6b'}"><div class="kpi-label">Low Stock Items</div><div class="kpi-value">${k.lowStock}</div><div class="kpi-note"><a class="plain" href="#/inventory">view inventory →</a></div></div>
-      <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">POs In Transit</div><div class="kpi-value">${k.openPOs}</div><div class="kpi-note"><a class="plain" href="#/purchasing">purchasing →</a></div></div>
-      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Pending Quotes</div><div class="kpi-value">${k.pendingQuotes}</div><div class="kpi-note"><a class="plain" href="#/quotes">follow up →</a></div></div>
+      <div class="kpi" style="--kpi-accent:${k.pendingCOs ? '#d64545' : '#8496aa'}"><div class="kpi-label">Unsigned Change Orders</div><div class="kpi-value">${k.pendingCOs}</div><div class="kpi-note"><a class="plain" href="#/changeorders">change orders →</a></div></div>
+      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Pending Quotes</div><div class="kpi-value">${k.pendingQuotes}</div><div class="kpi-note">${money0(k.quoteValue)} · <a class="plain" href="#/quotes">follow up →</a></div></div>
       <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Smart Insights</div><div class="kpi-value" id="insight-count">…</div><div class="kpi-note"><a class="plain" href="#/insights">AI insights →</a></div></div>
     </div>`;
   api('insights').then(ins => { const el = $('#insight-count'); if (el) el.textContent = ins.length; }).catch(() => {});
@@ -533,6 +564,13 @@ Happy to walk through any line item.</textarea></label>
         <h3 style="margin:16px 0 4px;font-size:13px">Line items</h3>
         <div id="q-items"></div>
         <div class="quote-summary" id="q-summary"></div>
+
+        <div class="estimator">
+          <h3>Price History <span class="hint">what you have charged for this before</span></h3>
+          <input id="est-q" placeholder="Search your history — e.g. railing, plywood, bollard">
+          <div id="est-results"></div>
+          <div id="est-warnings"></div>
+        </div>
       </div>
       <div class="modal-foot">
         ${q ? `<button class="btn danger" id="q-del" style="margin-right:auto">Delete</button>` : ''}
@@ -550,15 +588,74 @@ Happy to walk through any line item.</textarea></label>
         <div>Tax<b>${money(t.tax)}</b></div>
         <div class="grand">Quote total<b>${money(t.total)}</b></div>`;
     };
-    lineItemEditor($('#q-items'), items, { onChange: summary });
-    $('#q-form').addEventListener('input', summary);
+    lineItemEditor($('#q-items'), items, { onChange: () => { summary(); scheduleBenchmark(); } });
+    $('#q-form').addEventListener('input', () => { summary(); scheduleBenchmark(); });
     summary();
 
     $('#q-mat').onchange = e => {
       const m = materials.find(x => x.id === +e.target.value);
-      if (m) { items.push({ desc: m.name, qty: 1, unit: m.unit, unit_cost: m.unit_cost, unit_price: m.sell_price }); lineItemEditor($('#q-items'), items, { onChange: summary }); summary(); }
+      if (m) { items.push({ desc: m.name, qty: 1, unit: m.unit, unit_cost: m.unit_cost, unit_price: m.sell_price }); redrawItems(); }
       e.target.value = '';
     };
+
+    // ---- estimating feedback loop ----
+    function redrawItems() {
+      lineItemEditor($('#q-items'), items, { onChange: () => { summary(); scheduleBenchmark(); } });
+      summary(); scheduleBenchmark();
+    }
+    let benchTimer;
+    const scheduleBenchmark = () => { clearTimeout(benchTimer); benchTimer = setTimeout(runBenchmark, 500); };
+
+    async function runBenchmark() {
+      const box = $('#est-warnings');
+      if (!box) return;
+      const f = formData($('#q-form'));
+      try {
+        const b = await api('quotes/benchmark', 'POST', { ...f, items: items.filter(i => i.desc) });
+        const bits = [];
+        if (b.labor_accuracy.avg_variance_pct !== null) {
+          bits.push(`<div class="est-fact">Across ${b.labor_accuracy.samples.length} completed jobs your labor estimates ran
+            <b class="${b.labor_accuracy.avg_variance_pct > 0 ? 'neg' : 'pos'}">${b.labor_accuracy.avg_variance_pct > 0 ? '+' : ''}${b.labor_accuracy.avg_variance_pct}%</b> against the clock.</div>`);
+        }
+        if (b.similar_jobs.length) {
+          bits.push(`<div class="est-fact">Similar past work: ${b.similar_jobs.slice(0, 3).map(s =>
+            `<span class="mono">${esc(s.job_number)}</span> <b class="${s.margin_pct >= b.target_margin_pct ? 'pos' : 'neg'}">${s.margin_pct}%</b>`).join(' · ')}</div>`);
+        }
+        box.innerHTML = bits.join('') + b.warnings.map(w => `
+          <div class="est-warn ${esc(w.level)}"><h5>${esc(w.title)}</h5><p>${esc(w.detail)}</p></div>`).join('');
+      } catch { box.innerHTML = ''; }
+    }
+
+    let estTimer;
+    $('#est-q').oninput = e => {
+      clearTimeout(estTimer);
+      const q = e.target.value.trim();
+      if (!q) return void ($('#est-results').innerHTML = '');
+      estTimer = setTimeout(async () => {
+        const { matches } = await api('quotes/estimator?q=' + encodeURIComponent(q));
+        $('#est-results').innerHTML = matches.length ? matches.map((m, i) => `
+          <div class="est-row" data-i="${i}">
+            <div class="est-desc">${esc(m.desc)}
+              <span class="muted">${m.times_quoted ? `quoted ${m.times_quoted}×` : 'in inventory'}${m.last_on ? ` · last ${esc(m.last_on)} ${esc(m.last_used)}` : ''}${m.in_stock !== null ? ` · ${m.in_stock} on hand` : ''}</span>
+            </div>
+            <div class="est-price">
+              <b>${money(m.avg_price || m.current_price || 0)}</b>
+              <span class="muted">${m.min_price && m.max_price && m.min_price !== m.max_price ? `${money(m.min_price)}–${money(m.max_price)}` : 'avg price'}</span>
+            </div>
+            <button class="btn sm ghost" data-use="${i}">Use</button>
+          </div>`).join('') : '<div class="empty" style="padding:14px">Nothing in your history matches that yet.</div>';
+        $('#est-results').onclick = ev => {
+          const idx = ev.target.dataset.use;
+          if (idx === undefined) return;
+          const m = matches[+idx];
+          items.push({ desc: m.desc, qty: 1, unit: m.unit || 'ea',
+            unit_cost: m.avg_cost || m.current_cost || 0, unit_price: m.avg_price || m.current_price || 0 });
+          redrawItems();
+          toast(`Added at your historical price of ${money(m.avg_price || m.current_price || 0)}`, 'ok');
+        };
+      }, 300);
+    };
+    scheduleBenchmark();
 
     $('#q-save').onclick = async () => {
       const f = formData($('#q-form'));
@@ -685,10 +782,17 @@ async function jobDetail(id) {
     </div>
 
     <div class="kpis">
-      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Sold Price</div><div class="kpi-value">${money0(f.sold_price)}</div></div>
-      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Cost To Date</div><div class="kpi-value">${money0(f.total_cost)}</div><div class="kpi-note">materials ${money0(f.material_cost)} · labor ${money0(f.labor_cost)} · shop ${money0(f.wo_cost)}</div></div>
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Contract Value</div><div class="kpi-value">${money0(f.sold_price)}</div><div class="kpi-note">${f.change_orders.approved ? `base ${money0(f.base_price)} + ${money0(f.change_orders.approved)} in change orders` : 'no change orders'}</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Cost To Date</div><div class="kpi-value">${money0(f.total_cost)}</div><div class="kpi-note">materials ${money0(f.material_cost)} · labor ${money0(f.labor_cost)} · shop ${money0(f.wo_cost)}${f.sub_cost ? ` · subs ${money0(f.sub_cost)}` : ''}</div></div>
       <div class="kpi" style="--kpi-accent:${f.profit >= 0 ? '#2e9e6b' : '#d64545'}"><div class="kpi-label">Profit</div><div class="kpi-value ${f.profit >= 0 ? 'pos' : 'neg'}">${money0(f.profit)}</div><div class="kpi-note">${f.margin_pct}% margin</div></div>
-      <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Labor Hours</div><div class="kpi-value">${f.labor_hours}</div><div class="kpi-note">from the time clock</div></div>
+      <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Labor Hours</div><div class="kpi-value">${f.labor_hours}</div><div class="kpi-note">${f.est_labor_hours ? `${f.est_labor_hours} estimated · <span class="${f.labor_variance_pct > 0 ? 'neg' : 'pos'}">${f.labor_variance_pct > 0 ? '+' : ''}${f.labor_variance_pct}%</span>` : 'from the time clock'}</div></div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Billed</div><div class="kpi-value">${money0(f.invoicing.billed)}</div><div class="kpi-note">${f.sold_price ? Math.round(f.invoicing.billed / f.sold_price * 100) : 0}% of contract · ${f.invoicing.count} invoice${f.invoicing.count === 1 ? '' : 's'}</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Collected</div><div class="kpi-value pos">${money0(f.invoicing.paid)}</div><div class="kpi-note">cash in the bank</div></div>
+      <div class="kpi" style="--kpi-accent:${f.invoicing.outstanding > 0 ? '#d64545' : '#8496aa'}"><div class="kpi-label">Outstanding</div><div class="kpi-value">${money0(f.invoicing.outstanding)}</div><div class="kpi-note">${f.invoicing.retained ? `plus ${money0(f.invoicing.retained)} retainage held` : 'nothing retained'}</div></div>
+      <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Unbilled Work</div><div class="kpi-value">${money0(Math.max(0, f.sold_price - f.invoicing.billed))}</div><div class="kpi-note">${f.change_orders.pending ? `<span class="neg">${money0(f.change_orders.pending)} in unsigned change orders</span>` : 'contract not yet invoiced'}</div></div>
     </div>
 
     <div class="grid grid-2">
@@ -726,9 +830,67 @@ async function jobDetail(id) {
             <td class="num">${t.clock_out ? hoursBetween(t.clock_in, t.clock_out) : '—'}</td></tr>`).join('')}
         </tbody></table>` : '<div class="empty">No time clocked on this job yet.</div>'}
       </div>
-    </div>`;
+    </div>
+
+    <div class="grid grid-2 section-gap">
+      <div class="card">
+        <h3>Change Orders <span class="hint">added scope on this job</span>
+          <button class="btn sm primary" id="jd-co" style="margin-left:auto">+ New</button></h3>
+        ${job.change_orders.length ? `<table class="tbl"><thead><tr><th>CO</th><th>What changed</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>
+          ${job.change_orders.map(c => `<tr class="clickable" onclick="location.hash='#/changeorders'">
+            <td class="mono strong">${esc(c.co_number)}</td><td>${esc(c.title)}</td>
+            <td class="num">${money(c.totals.total)}</td><td>${badge(c.status)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">No change orders. Scope creep with no change order is money you gave away.</div>'}
+      </div>
+      <div class="card">
+        <h3>Billing <span class="hint">invoices against this job</span>
+          <button class="btn sm primary" id="jd-bill" style="margin-left:auto">+ Bill</button></h3>
+        ${job.invoices.length ? `<table class="tbl"><thead><tr><th>Invoice</th><th>Type</th><th class="num">Total</th><th class="num">Balance</th><th>Status</th></tr></thead><tbody>
+          ${job.invoices.map(i => `<tr class="clickable" onclick="location.hash='#/invoices'">
+            <td class="mono strong">${esc(i.invoice_number)}</td><td class="muted">${esc(cap(i.invoice_type))}</td>
+            <td class="num">${money(i.totals.total)}</td>
+            <td class="num ${i.totals.balance > 0 ? 'neg' : 'pos'}">${money(i.totals.balance)}</td>
+            <td>${badge(i.status)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">Nothing invoiced yet on this job.</div>'}
+      </div>
+    </div>
+
+    ${job.subs.length ? `<div class="card section-gap">
+      <h3>Subcontractors On This Job</h3>
+      <table class="tbl"><thead><tr><th>Company</th><th>Trade</th><th>Scope</th><th class="num">Contract</th><th>Insurance</th></tr></thead><tbody>
+        ${job.subs.map(s => {
+          const coi = s.documents.filter(d => d.doc_type === 'COI' && d.expires_on).sort((a, b) => b.expires_on.localeCompare(a.expires_on))[0];
+          const days = coi ? Math.floor((new Date(coi.expires_on) - new Date(todayStr())) / 864e5) : null;
+          return `<tr><td class="strong">${esc(s.name)}</td><td class="muted">${esc(s.trade || '')}</td>
+            <td class="muted">${esc(s.scope || '')}</td><td class="num">${money0(s.contract_amount)}</td>
+            <td>${days === null ? '<span class="badge b-declined">No COI</span>'
+              : days < 0 ? `<span class="badge b-declined">Expired ${esc(coi.expires_on)}</span>`
+              : days <= 30 ? `<span class="badge b-in_progress">Expires in ${days}d</span>`
+              : `<span class="badge b-accepted">Current</span>`}</td></tr>`;
+        }).join('')}
+      </tbody></table>
+    </div>` : ''}
+
+    ${job.job_cards.length ? `<div class="card section-gap">
+      <h3>Field Job Cards <span class="hint">what the crew reported</span></h3>
+      ${job.job_cards.slice(0, 8).map(c => `
+        <div class="jobcard ${c.status === 'approved' ? 'approved' : ''}">
+          <div class="jc-head">
+            <span class="strong">${esc(c.employee_name)}</span><span class="muted">${esc(c.work_date)}</span>
+            <span class="badge b-${c.status === 'approved' ? 'accepted' : 'sent'}">${esc(cap(c.status))}</span>
+            <span class="mono" style="margin-left:auto">${c.hours} hrs</span>
+          </div>
+          <div class="jc-body">${esc(c.work_performed)}</div>
+          ${c.materials_used ? `<div class="jc-field"><b>Materials:</b> ${esc(c.materials_used)}</div>` : ''}
+          ${c.issues ? `<div class="jc-issue"><b>⚠ Flagged:</b> ${esc(c.issues)}</div>` : ''}
+          ${c.photos && c.photos.length ? `<div class="photo-strip">${c.photos.map(p =>
+            `<a href="/uploads/${esc(p.filename)}" target="_blank"><img src="/uploads/${esc(p.filename)}" alt="${esc(p.caption || '')}"></a>`).join('')}</div>` : ''}
+        </div>`).join('')}
+    </div>` : ''}`;
 
   $('#jd-edit').onclick = () => jobModal(job);
+  $('#jd-co').onclick = () => { location.hash = '#/changeorders'; setTimeout(() => window.coModalFor && window.coModalFor(null, job.id), 400); };
+  $('#jd-bill').onclick = () => { location.hash = '#/invoices'; setTimeout(() => { const b = $('#inv-progress'); if (b) b.click(); }, 400); };
   $('#jd-mat').onclick = () => {
     openModal(`
       <div class="modal-head"><h2>Log material on ${esc(job.job_number)}</h2><button class="modal-close">×</button></div>
@@ -1179,6 +1341,622 @@ PAGES.jobcards = async () => {
       toast('Job card approved', 'ok'); route();
     }
   };
+};
+
+// ---------------------------------------------------------------- shared: email a customer document
+async function docEmailModal({ kind, endpoint, doc, number, title, total, email, contact, defaultMessage, accent = 'primary' }) {
+  const cfg = await api('settings');
+  const configured = !!cfg.smtp_host;
+  const greeting = contact ? contact.split(' ')[0] : '';
+  openModal(`
+    <div class="modal-head"><h2>Email ${esc(kind)} ${esc(number)}</h2><button class="modal-close">×</button></div>
+    <div class="modal-body">
+      ${configured ? '' : `<div class="hr-note"><b>SMTP is not set up yet.</b> Sending now saves a full preview of the customer's email to the outbox instead of delivering it. Add your mail server under <a class="plain" href="#/settings">Settings → Email</a>.</div>`}
+      <form id="dm-form" class="form-grid">
+        <label class="fld full">To<input name="to" value="${esc(email || '')}" placeholder="customer@company.com" required></label>
+        <label class="fld full">Subject<input name="subject" value="${esc(title)}"></label>
+        <label class="fld full">Message<textarea name="message" style="min-height:120px">${esc(defaultMessage.replace('{name}', greeting ? ' ' + greeting : ''))}</textarea></label>
+      </form>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">The full ${esc(kind.toLowerCase())} (${money(total)}) is included in the email automatically, with a secure link the customer can open on any device.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="dm-link" style="margin-right:auto">Just get the link</button>
+      <button class="btn ghost modal-close">Cancel</button>
+      <button class="btn ${accent}" id="dm-send">${configured ? 'Send' : 'Generate Preview'}</button>
+    </div>`);
+
+  $('#dm-link').onclick = async () => {
+    const r = await api(`${endpoint}/${doc.id}/link`, 'POST', {});
+    $('.modal-body').insertAdjacentHTML('beforeend', `
+      <div class="copybox"><input value="${esc(r.link)}" readonly onclick="this.select()">
+      <button class="btn sm ghost" onclick="navigator.clipboard.writeText('${esc(r.link)}');this.textContent='Copied'">Copy</button></div>`);
+  };
+  $('#dm-send').onclick = async () => {
+    const btn = $('#dm-send'); btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const r = await api(`${endpoint}/${doc.id}/email`, 'POST', formData($('#dm-form')));
+      closeModal(); toast(r.message, r.status === 'sent' ? 'ok' : '');
+      if (r.preview) window.open(r.preview, '_blank');
+      route();
+    } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = configured ? 'Send' : 'Generate Preview'; }
+  };
+}
+
+// ---------------------------------------------------------------- CHANGE ORDERS
+PAGES.changeorders = async () => {
+  const [cos, jobs, clients, numbers, settings] = await Promise.all([
+    api('changeorders'), api('jobs'), api('clients'), api('numbers'), api('settings'),
+  ]);
+  const pending = cos.filter(c => c.status === 'sent');
+  const approvedTotal = cos.filter(c => c.status === 'approved').reduce((s, c) => s + c.totals.total, 0);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Approved &amp; Under Contract</div><div class="kpi-value">${money0(approvedTotal)}</div><div class="kpi-note">${cos.filter(c => c.status === 'approved').length} signed change orders</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Awaiting Signature</div><div class="kpi-value">${money0(pending.reduce((s, c) => s + c.totals.total, 0))}</div><div class="kpi-note">${pending.length} out with customers — do not build these yet</div></div>
+      <div class="kpi" style="--kpi-accent:#8496aa"><div class="kpi-label">Drafts</div><div class="kpi-value">${cos.filter(c => c.status === 'draft').length}</div><div class="kpi-note">not sent to anyone yet</div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Schedule Impact</div><div class="kpi-value">${cos.filter(c => c.status === 'approved').reduce((s, c) => s + (c.schedule_days || 0), 0)} d</div><div class="kpi-note">added by approved changes</div></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="filters" id="co-filters">
+        ${['all', 'draft', 'sent', 'approved', 'declined'].map(s => `<span class="chip ${s === 'all' ? 'active' : ''}" data-f="${s}">${cap(s)}</span>`).join('')}
+      </div>
+      <button class="btn primary" id="co-new">+ New Change Order</button>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>CO #</th><th>Job</th><th>What changed</th><th>Reason</th><th class="num">Amount</th><th class="num">Days</th><th>Status</th><th></th>
+    </tr></thead><tbody id="co-body"></tbody></table></div>`;
+
+  function render(filter) {
+    const rows = cos.filter(c => filter === 'all' || c.status === filter);
+    $('#co-body').innerHTML = rows.length ? rows.map(c => `
+      <tr>
+        <td class="mono strong">${esc(c.co_number)}</td>
+        <td><span class="mono">${esc(c.job_number || '')}</span><div class="muted" style="font-size:11.5px">${esc(c.client_name || '')}</div></td>
+        <td>${esc(c.title)}</td>
+        <td class="muted">${esc(cap(c.reason || '—'))}</td>
+        <td class="num strong">${money(c.totals.total)}</td>
+        <td class="num muted">${c.schedule_days || 0}</td>
+        <td>${badge(c.status)}${c.client_signature ? `<div class="muted" style="font-size:11px;margin-top:2px">✓ ${esc(c.client_signature)}</div>` : ''}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${c.id}">Edit</button>
+          ${c.status === 'draft' || c.status === 'sent' ? `<button class="btn sm" data-mail="${c.id}">✉ ${c.status === 'sent' ? 'Resend' : 'Send'}</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="8"><div class="empty">No change orders here.</div></td></tr>';
+  }
+  render('all');
+  $('#co-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#co-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); render(c.dataset.f);
+  };
+  $('#co-new').onclick = () => coModal();
+  $('#co-body').onclick = e => {
+    if (e.target.dataset.edit) return coModal(cos.find(c => c.id === +e.target.dataset.edit));
+    if (e.target.dataset.mail) {
+      const c = cos.find(x => x.id === +e.target.dataset.mail);
+      docEmailModal({ kind: 'Change Order', endpoint: 'changeorders', doc: c, number: c.co_number,
+        title: `Change Order ${c.co_number}: ${c.title}`, total: c.totals.total,
+        email: c.client_email, contact: c.client_contact,
+        defaultMessage: `Hi{name},\n\nWe ran into work outside the original scope on ${c.job_number}. Details and pricing are below — we need your approval before we proceed.\n\nThanks,\n${ME.name}` });
+    }
+  };
+
+  window.coModalFor = coModal;   // reachable from the job card page
+  function coModal(co, presetJobId, presetCard) {
+    const items = co ? JSON.parse(co.items || '[]') : [];
+    openModal(`
+      <div class="modal-head"><h2>${co ? 'Edit ' + esc(co.co_number) : 'New Change Order ' + esc(numbers.co)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <form id="co-form" class="form-grid">
+          <label class="fld">Job<select name="job_id" required>
+            ${jobs.filter(j => j.status !== 'completed' || (co && co.job_id === j.id)).map(j =>
+              `<option value="${j.id}" ${(co ? co.job_id === j.id : presetJobId === j.id) ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}
+          </select></label>
+          <label class="fld">Reason<select name="reason">
+            ${['client request', 'unforeseen condition', 'design change', 'code requirement', 'other']
+              .map(r => `<option ${co && co.reason === r ? 'selected' : ''}>${r}</option>`).join('')}
+          </select></label>
+          <label class="fld full">Title<input name="title" required value="${esc(co?.title || '')}" placeholder="e.g. Reroute irrigation line at footings"></label>
+          <label class="fld full">What changed and why<textarea name="description">${esc(co?.description || presetCard?.issues || '')}</textarea></label>
+          <label class="fld">Labor hours<input name="labor_hours" type="number" step="any" value="${co?.labor_hours ?? 0}"></label>
+          <label class="fld">Labor rate $/hr<input name="labor_rate" type="number" step="any" value="${co?.labor_rate ?? settings.default_labor_rate ?? 65}"></label>
+          <label class="fld">Markup %<input name="markup_pct" type="number" step="any" value="${co?.markup_pct ?? 10}"></label>
+          <label class="fld">Tax %<input name="tax_pct" type="number" step="any" value="${co?.tax_pct ?? settings.default_tax_pct ?? 0}"></label>
+          <label class="fld">Calendar days added<input name="schedule_days" type="number" step="any" value="${co?.schedule_days ?? 0}"></label>
+          <label class="fld">Status<select name="status">${['draft', 'sent', 'approved', 'declined'].map(s => `<option value="${s}" ${co && co.status === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+        </form>
+        <h3 style="margin:16px 0 4px;font-size:13px">Added scope</h3>
+        <div id="co-items"></div>
+        <div class="quote-summary" id="co-summary"></div>
+      </div>
+      <div class="modal-foot">
+        ${co ? '<button class="btn danger" id="co-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="co-save">${co ? 'Save' : 'Create Change Order'}</button>
+      </div>`);
+
+    const summary = () => {
+      const f = formData($('#co-form'));
+      const t = calcQuote(items, f.labor_hours, f.labor_rate, f.markup_pct, f.tax_pct);
+      $('#co-summary').innerHTML = `
+        <div>Materials<b>${money(t.materials)}</b></div>
+        <div>Labor<b>${money(t.labor)}</b></div>
+        <div>Markup<b>${money(t.markup)}</b></div>
+        <div>Tax<b>${money(t.tax)}</b></div>
+        <div class="grand">Change order total<b>${money(t.total)}</b></div>`;
+    };
+    lineItemEditor($('#co-items'), items, { onChange: summary });
+    $('#co-form').addEventListener('input', summary);
+    summary();
+
+    $('#co-save').onclick = async () => {
+      const f = formData($('#co-form'));
+      if (!f.title) return toast('Title is required', 'err');
+      f.items = items.filter(i => i.desc);
+      const job = jobs.find(j => j.id === +f.job_id);
+      f.client_id = job ? job.client_id : null;
+      if (presetCard) f.source_card_id = presetCard.id;
+      try {
+        if (co) await api('changeorders/' + co.id, 'PUT', f);
+        else { f.co_number = numbers.co; await api('changeorders', 'POST', f); }
+        closeModal(); toast('Change order saved', 'ok'); location.hash = '#/changeorders'; route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    if (co) $('#co-del').onclick = async () => {
+      if (!confirm(`Delete ${co.co_number}?`)) return;
+      await api('changeorders/' + co.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- INVOICES & AR
+PAGES.invoices = async () => {
+  const [invoices, aging, jobs, clients, numbers, settings] = await Promise.all([
+    api('invoices'), api('invoices/aging'), api('jobs'), api('clients'), api('numbers'), api('settings'),
+  ]);
+  const b = aging.buckets;
+  const maxBucket = Math.max(...Object.values(b), 1);
+  const bucketLabels = { current: 'Not yet due', d1_30: '1–30 days', d31_60: '31–60 days', d61_90: '61–90 days', d90_plus: '90+ days' };
+  const bucketColors = { current: '#2e9e6b', d1_30: '#f5a524', d31_60: '#e8833a', d61_90: '#d64545', d90_plus: '#a02020' };
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Outstanding</div><div class="kpi-value">${money0(aging.total_outstanding)}</div><div class="kpi-note">${aging.open.length} unpaid invoices</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Past Due</div><div class="kpi-value neg">${money0(aging.open.filter(o => o.days_overdue > 0).reduce((s, o) => s + o.balance, 0))}</div><div class="kpi-note">${aging.open.filter(o => o.days_overdue > 0).length} invoices overdue</div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Retainage Held</div><div class="kpi-value">${money0(aging.retainage_held)}</div><div class="kpi-note">billable at closeout</div></div>
+      <div class="kpi" style="--kpi-accent:#8496aa"><div class="kpi-label">Drafts</div><div class="kpi-value">${invoices.filter(i => i.status === 'draft').length}</div><div class="kpi-note">unsent — cannot be paid</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>Receivables Aging</h3>
+        ${Object.entries(b).map(([k, v]) => `
+          <div class="bar-row">
+            <span class="lbl">${bucketLabels[k]}</span>
+            <span class="track"><i style="width:${Math.round(v / maxBucket * 100)}%;background:${bucketColors[k]}"></i></span>
+            <span class="val">${money0(v)}</span>
+          </div>`).join('')}
+        <p class="muted" style="font-size:12.5px;margin-top:12px">Anything past 60 days needs a phone call, not another emailed copy.</p>
+      </div>
+      <div class="card">
+        <h3>Oldest Unpaid</h3>
+        ${aging.open.length ? `<table class="tbl"><thead><tr><th>Invoice</th><th>Client</th><th>Due</th><th class="num">Balance</th></tr></thead><tbody>
+          ${aging.open.slice(0, 8).map(o => `<tr>
+            <td class="mono strong">${esc(o.invoice_number)}</td>
+            <td class="muted">${esc(o.client || '')}</td>
+            <td class="mono ${o.days_overdue > 0 ? 'neg' : 'muted'}">${esc(o.due_date || '—')}${o.days_overdue > 0 ? ` (+${o.days_overdue}d)` : ''}</td>
+            <td class="num strong">${money(o.balance)}</td></tr>`).join('')}
+        </tbody></table>` : '<div class="empty">Nothing outstanding — everyone has paid.</div>'}
+      </div>
+    </div>
+
+    <div class="toolbar section-gap">
+      <div class="filters" id="inv-filters">
+        ${['all', 'draft', 'sent', 'paid'].map(s => `<span class="chip ${s === 'all' ? 'active' : ''}" data-f="${s}">${cap(s)}</span>`).join('')}
+      </div>
+      <div>
+        <button class="btn ghost" id="inv-progress">Bill a job by % complete</button>
+        <button class="btn primary" id="inv-new">+ New Invoice</button>
+      </div>
+    </div>
+    <div class="card"><table class="tbl"><thead><tr>
+      <th>Invoice</th><th>Client / Job</th><th>Type</th><th>Issued</th><th>Due</th>
+      <th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th><th>Status</th><th></th>
+    </tr></thead><tbody id="inv-body"></tbody></table></div>`;
+
+  function render(filter) {
+    const rows = invoices.filter(i => filter === 'all' || i.status === filter);
+    $('#inv-body').innerHTML = rows.length ? rows.map(i => `
+      <tr>
+        <td class="mono strong">${esc(i.invoice_number)}</td>
+        <td>${esc(i.client_name || '—')}${i.job_number ? `<div class="muted" style="font-size:11.5px">${esc(i.job_number)}</div>` : ''}</td>
+        <td class="muted">${esc(cap(i.invoice_type))}</td>
+        <td class="mono muted">${esc(i.issue_date || '—')}</td>
+        <td class="mono ${i.days_overdue > 0 ? 'neg' : 'muted'}">${esc(i.due_date || '—')}${i.days_overdue > 0 ? ` +${i.days_overdue}d` : ''}</td>
+        <td class="num">${money(i.totals.total)}</td>
+        <td class="num pos">${i.totals.paid ? money(i.totals.paid) : '—'}</td>
+        <td class="num strong ${i.totals.balance > 0 ? (i.days_overdue > 0 ? 'neg' : '') : 'pos'}">${money(i.totals.balance)}</td>
+        <td>${badge(i.status)}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm ghost" data-edit="${i.id}">Open</button>
+          <button class="btn sm" data-mail="${i.id}">✉</button>
+          ${i.totals.balance > 0 ? `<button class="btn sm green" data-pay="${i.id}">Payment</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="10"><div class="empty">No invoices here.</div></td></tr>';
+  }
+  render('all');
+  $('#inv-filters').onclick = e => {
+    const c = e.target.closest('.chip'); if (!c) return;
+    $$('#inv-filters .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active'); render(c.dataset.f);
+  };
+  $('#inv-new').onclick = () => invModal();
+  $('#inv-progress').onclick = () => progressModal();
+  $('#inv-body').onclick = e => {
+    const inv = id => invoices.find(x => x.id === +id);
+    if (e.target.dataset.edit) return invModal(inv(e.target.dataset.edit));
+    if (e.target.dataset.pay) return payModal(inv(e.target.dataset.pay));
+    if (e.target.dataset.mail) {
+      const i = inv(e.target.dataset.mail);
+      docEmailModal({ kind: 'Invoice', endpoint: 'invoices', doc: i, number: i.invoice_number,
+        title: `Invoice ${i.invoice_number}`, total: i.totals.balance, email: i.client_email, contact: i.client_contact,
+        defaultMessage: `Hi{name},\n\nInvoice ${i.invoice_number} is below${i.due_date ? `, due ${i.due_date}` : ''}. Thank you for your business.\n\n${ME.name}`,
+        accent: 'green' });
+    }
+  };
+
+  function progressModal() {
+    const open = jobs.filter(j => j.status !== 'completed' || j.financials.invoicing.billed < j.financials.sold_price);
+    openModal(`
+      <div class="modal-head"><h2>Bill a job by percent complete</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:14px;font-size:13px">Pick a job and how far along it is. We'll bill the difference between that percentage of the contract and what you have already invoiced.</p>
+        <form id="pg-form" class="form-grid">
+          <label class="fld full">Job<select name="job_id" id="pg-job">
+            ${open.map(j => `<option value="${j.id}">${esc(j.job_number)} — ${esc(j.title)} (${money0(j.financials.sold_price)} contract, ${money0(j.financials.invoicing.billed)} billed)</option>`).join('')}
+          </select></label>
+          <label class="fld">Percent complete<input name="percent_complete" type="number" min="0" max="100" value="50"></label>
+          <label class="fld">Retainage %<input name="retainage_pct" type="number" step="any" value="${settings.default_retainage_pct || 0}"></label>
+          <label class="fld">Tax %<input name="tax_pct" type="number" step="any" value="0"></label>
+          <label class="fld">Terms (days)<input name="terms_days" type="number" value="${settings.payment_terms_days || 30}"></label>
+        </form>
+        <div id="pg-preview" class="quote-summary"></div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="pg-go">Create Draft Invoice</button></div>`, { narrow: true });
+
+    const preview = () => {
+      const f = formData($('#pg-form'));
+      const j = jobs.find(x => x.id === +f.job_id);
+      if (!j) return;
+      const gross = j.financials.sold_price * (Number(f.percent_complete) || 0) / 100;
+      const thisBill = Math.max(0, gross - j.financials.invoicing.billed);
+      const ret = thisBill * (Number(f.retainage_pct) || 0) / 100;
+      $('#pg-preview').innerHTML = `
+        <div>Contract<b>${money(j.financials.sold_price)}</b></div>
+        <div>Already billed<b>${money(j.financials.invoicing.billed)}</b></div>
+        <div>Less retainage<b>${money(ret)}</b></div>
+        <div class="grand">This invoice<b>${money(thisBill - ret)}</b></div>`;
+    };
+    $('#pg-form').addEventListener('input', preview);
+    preview();
+
+    $('#pg-go').onclick = async () => {
+      const f = formData($('#pg-form'));
+      try {
+        const r = await api(`invoices/${f.job_id}/generate`, 'POST', f);
+        closeModal(); toast(`${r.invoice_number} drafted for ${money(r.amount)}`, 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
+  function payModal(inv) {
+    openModal(`
+      <div class="modal-head"><h2>Record payment — ${esc(inv.invoice_number)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:14px">${esc(inv.client_name || '')} owes <b class="strong">${money(inv.totals.balance)}</b> of ${money(inv.totals.total)}.</p>
+        <form id="pay-form" class="form-grid">
+          <label class="fld">Amount $<input name="amount" type="number" step="any" value="${inv.totals.balance}" required></label>
+          <label class="fld">Received on<input name="received_on" type="date" value="${todayStr()}"></label>
+          <label class="fld">Method<select name="method">${['check', 'ach', 'card', 'cash', 'other'].map(m => `<option value="${m}">${m.toUpperCase()}</option>`).join('')}</select></label>
+          <label class="fld">Reference<input name="reference" placeholder="check # / confirmation"></label>
+          <label class="fld full">Notes<input name="notes"></label>
+        </form>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn green" id="pay-save">Record Payment</button></div>`, { narrow: true });
+    $('#pay-save').onclick = async () => {
+      try {
+        const r = await api(`invoices/${inv.id}/payments`, 'POST', formData($('#pay-form')));
+        closeModal();
+        toast(r.paid_in_full ? 'Paid in full — nice' : `Payment recorded, ${money(r.balance)} still open`, 'ok');
+        route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
+  function invModal(inv) {
+    const items = inv ? JSON.parse(inv.items || '[]') : [];
+    const payments = inv ? null : [];
+    openModal(`
+      <div class="modal-head"><h2>${inv ? esc(inv.invoice_number) : 'New Invoice ' + esc(numbers.invoice)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <form id="iv-form" class="form-grid">
+          <label class="fld">Client<select name="client_id">${clients.map(c => `<option value="${c.id}" ${inv && inv.client_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+          <label class="fld">Job<select name="job_id"><option value="">— none —</option>${jobs.map(j => `<option value="${j.id}" ${inv && inv.job_id === j.id ? 'selected' : ''}>${esc(j.job_number)} ${esc(j.title)}</option>`).join('')}</select></label>
+          <label class="fld">Type<select name="invoice_type">${['deposit', 'progress', 'final'].map(t => `<option value="${t}" ${inv && inv.invoice_type === t ? 'selected' : ''}>${cap(t)}</option>`).join('')}</select></label>
+          <label class="fld">Status<select name="status">${['draft', 'sent', 'paid', 'void'].map(s => `<option value="${s}" ${inv && inv.status === s ? 'selected' : ''}>${cap(s)}</option>`).join('')}</select></label>
+          <label class="fld full">Description<input name="description" value="${esc(inv?.description || '')}" placeholder="e.g. Progress billing #2 — drywall complete"></label>
+          <label class="fld">Issue date<input name="issue_date" type="date" value="${esc(inv?.issue_date || todayStr())}"></label>
+          <label class="fld">Due date<input name="due_date" type="date" value="${esc(inv?.due_date || '')}"></label>
+          <label class="fld">Terms (days)<input name="terms_days" type="number" value="${inv?.terms_days ?? settings.payment_terms_days ?? 30}"></label>
+          <label class="fld">Retainage %<input name="retainage_pct" type="number" step="any" value="${inv?.retainage_pct ?? 0}"></label>
+          <label class="fld">Tax %<input name="tax_pct" type="number" step="any" value="${inv?.tax_pct ?? 0}"></label>
+          <label class="fld full">Notes shown to the customer<textarea name="notes">${esc(inv?.notes || '')}</textarea></label>
+        </form>
+        <h3 style="margin:16px 0 4px;font-size:13px">Line items</h3>
+        <div id="iv-items"></div>
+        <div class="quote-summary" id="iv-summary"></div>
+        ${inv && inv.totals.paid ? `<div class="hr-note" style="margin-top:12px">${money(inv.totals.paid)} in payments has been applied to this invoice.</div>` : ''}
+      </div>
+      <div class="modal-foot">
+        ${inv ? '<button class="btn danger" id="iv-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="iv-save">Save</button>
+      </div>`);
+
+    const summary = () => {
+      const f = formData($('#iv-form'));
+      const sub = items.reduce((s, i) => s + (i.qty || 0) * (i.unit_price || 0), 0);
+      const tax = sub * (Number(f.tax_pct) || 0) / 100;
+      const ret = (sub + tax) * (Number(f.retainage_pct) || 0) / 100;
+      $('#iv-summary').innerHTML = `
+        <div>Subtotal<b>${money(sub)}</b></div>
+        <div>Tax<b>${money(tax)}</b></div>
+        <div>Retainage held<b>−${money(ret)}</b></div>
+        <div class="grand">Invoice total<b>${money(sub + tax - ret)}</b></div>`;
+    };
+    lineItemEditor($('#iv-items'), items, { onChange: summary });
+    $('#iv-form').addEventListener('input', summary);
+    summary();
+
+    $('#iv-save').onclick = async () => {
+      const f = formData($('#iv-form'));
+      f.items = items.filter(i => i.desc);
+      if (!f.items.length) return toast('Add at least one line item', 'err');
+      if (!f.due_date && f.issue_date) {
+        const d = new Date(f.issue_date + 'T12:00'); d.setDate(d.getDate() + (Number(f.terms_days) || 0));
+        f.due_date = d.toISOString().slice(0, 10);
+      }
+      try {
+        if (inv) await api('invoices/' + inv.id, 'PUT', f);
+        else { f.invoice_number = numbers.invoice; await api('invoices', 'POST', f); }
+        closeModal(); toast('Invoice saved', 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    if (inv) $('#iv-del').onclick = async () => {
+      if (!confirm(`Delete ${inv.invoice_number}? Payments recorded against it stay in the ledger.`)) return;
+      await api('invoices/' + inv.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
+    };
+  }
+};
+
+// ---------------------------------------------------------------- PAYROLL
+PAGES.payroll = async () => {
+  const jobs = await api('jobs');
+  const pwJobs = jobs.filter(j => j.prevailing_wage);
+  const monday = (() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
+  const from = new Date(monday); from.setDate(from.getDate() - 7);
+
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="filters">
+        <label class="fld" style="flex-direction:row;align-items:center;gap:8px">From<input type="date" id="pr-from" value="${from.toISOString().slice(0, 10)}"></label>
+        <label class="fld" style="flex-direction:row;align-items:center;gap:8px">To<input type="date" id="pr-to" value="${todayStr()}"></label>
+        <button class="btn ghost sm" id="pr-go">Run</button>
+      </div>
+      <a class="btn ghost" id="pr-csv" download>⬇ Export CSV</a>
+    </div>
+    <div id="pr-out"><div class="empty">Loading…</div></div>
+
+    <div class="card section-gap">
+      <h3>Certified Payroll <span class="hint">WH-347 style, for prevailing-wage work</span></h3>
+      ${pwJobs.length ? `
+        <div class="toolbar" style="margin-bottom:12px">
+          <div class="filters">
+            <label class="fld" style="flex-direction:row;align-items:center;gap:8px">Job<select id="cp-job">
+              ${jobs.map(j => `<option value="${j.id}" ${j.prevailing_wage ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}${j.prevailing_wage ? ' (prevailing wage)' : ''}</option>`).join('')}
+            </select></label>
+            <label class="fld" style="flex-direction:row;align-items:center;gap:8px">Week ending<input type="date" id="cp-week" value="${todayStr()}"></label>
+            <button class="btn ghost sm" id="cp-go">Run</button>
+          </div>
+          <a class="btn ghost sm" id="cp-csv" download>⬇ CSV</a>
+        </div>` : '<div class="hr-note">No jobs are flagged as prevailing wage. Tick <b>prevailing wage</b> on a job to file certified payroll for it.</div>'}
+      <div id="cp-out"></div>
+    </div>`;
+
+  async function runPayroll() {
+    const f = $('#pr-from').value, t = $('#pr-to').value;
+    $('#pr-csv').href = `/api/payroll?from=${f}&to=${t}&format=csv`;
+    const d = await api(`payroll?from=${f}&to=${t}`);
+    $('#pr-out').innerHTML = `
+      <div class="kpis">
+        <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Total Hours</div><div class="kpi-value">${d.totals.hours}</div><div class="kpi-note">${d.from} → ${d.to}</div></div>
+        <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Gross Payroll</div><div class="kpi-value">${money0(d.totals.gross)}</div><div class="kpi-note">before taxes and withholding</div></div>
+        <div class="kpi" style="--kpi-accent:#f5a524"><div class="kpi-label">Overtime Hours</div><div class="kpi-value">${d.rows.reduce((s, r) => s + r.ot_hours, 0)}</div><div class="kpi-note">over 40 in a week, at 1.5×</div></div>
+        <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">On Payroll</div><div class="kpi-value">${d.rows.length}</div><div class="kpi-note">employees with hours</div></div>
+      </div>
+      <div class="card"><table class="tbl"><thead><tr>
+        <th>Employee</th><th>Classification</th><th class="num">Rate</th><th class="num">Regular</th><th class="num">OT</th><th class="num">Total hrs</th><th class="num">Gross</th><th>Jobs worked</th>
+      </tr></thead><tbody>
+        ${d.rows.length ? d.rows.map(r => `<tr>
+          <td class="strong">${esc(r.name)}</td>
+          <td class="muted">${esc(r.classification)}</td>
+          <td class="num">${money(r.rate)}</td>
+          <td class="num">${r.regular_hours}</td>
+          <td class="num ${r.ot_hours ? 'neg' : 'muted'}">${r.ot_hours || '—'}</td>
+          <td class="num strong">${r.total_hours}</td>
+          <td class="num">${money(r.gross_pay)}</td>
+          <td class="muted" style="font-size:12px">${Object.entries(r.by_job).map(([j, h]) => `${esc(j)} (${h})`).join(', ')}</td>
+        </tr>`).join('') : '<tr><td colspan="8"><div class="empty">No hours in this period.</div></td></tr>'}
+      </tbody></table></div>`;
+  }
+  $('#pr-go').onclick = runPayroll;
+  runPayroll();
+
+  if (pwJobs.length) {
+    async function runCertified() {
+      const jobId = $('#cp-job').value, wk = $('#cp-week').value;
+      $('#cp-csv').href = `/api/payroll/certified?job_id=${jobId}&week_ending=${wk}&format=csv`;
+      const d = await api(`payroll/certified?job_id=${jobId}&week_ending=${wk}`);
+      $('#cp-out').innerHTML = d.employees.length ? `
+        <p class="muted" style="font-size:12.5px;margin-bottom:10px">${esc(d.job.job_number)} — ${esc(d.job.title)} · payroll week ${d.week_start} to ${d.week_ending}</p>
+        <table class="tbl"><thead><tr>
+          <th>Employee</th><th>Classification</th>
+          ${d.days.map(x => `<th class="num">${new Date(x + 'T12:00').toLocaleDateString([], { weekday: 'narrow', day: 'numeric' })}</th>`).join('')}
+          <th class="num">Total</th><th class="num">Rate</th><th class="num">Gross</th><th class="num">Fringe</th><th class="num">Package</th>
+        </tr></thead><tbody>
+          ${d.employees.map(e => `<tr>
+            <td class="strong">${esc(e.name)}</td><td class="muted">${esc(e.classification)}</td>
+            ${d.days.map(x => `<td class="num ${e.days[x] ? '' : 'muted'}">${e.days[x] || '—'}</td>`).join('')}
+            <td class="num strong">${e.total}</td><td class="num">${money(e.rate)}</td>
+            <td class="num">${money(e.gross_pay)}</td><td class="num muted">${money(e.fringe_total)}</td>
+            <td class="num strong">${money(e.total_package)}</td>
+          </tr>`).join('')}
+        </tbody></table>
+        <p class="muted" style="font-size:12px;margin-top:10px">Fringe is calculated from each classification's fringe rate on the Team page. Verify against the current wage determination before filing.</p>`
+        : '<div class="empty">No hours clocked on that job during that week.</div>';
+    }
+    $('#cp-go').onclick = runCertified;
+    runCertified();
+  }
+};
+
+// ---------------------------------------------------------------- SUBCONTRACTORS
+PAGES.subs = async () => {
+  const [subs, jobs] = await Promise.all([api('subcontractors'), api('jobs')]);
+  const bad = subs.filter(s => s.active && !s.compliant);
+  const soon = subs.filter(s => s.compliant && s.coi_days_left !== null && s.coi_days_left <= 30);
+
+  view.innerHTML = `
+    ${bad.length ? `<div class="insight" style="border-left:5px solid var(--red);margin-bottom:16px">
+      <div class="sev high"></div>
+      <div><h4>${bad.length} subcontractor${bad.length > 1 ? 's are' : ' is'} not insured right now</h4>
+      <p>${bad.map(s => esc(s.name)).join(', ')} — pull them off the schedule until a current certificate is on file. Your general liability policy will not cover work by an uninsured sub, and neither will your customer's.</p></div>
+    </div>` : ''}
+
+    <div class="toolbar">
+      <span class="muted">${soon.length ? `${soon.length} certificate${soon.length > 1 ? 's expire' : ' expires'} within 30 days.` : 'All certificates current.'}</span>
+      <button class="btn primary" id="s-new">+ Add Subcontractor</button>
+    </div>
+
+    <div class="grid grid-2" id="s-grid">
+      ${subs.map(s => `
+        <div class="card sub-card ${s.active && !s.compliant ? 'danger' : ''}">
+          <h3>${esc(s.name)}
+            <span class="r" style="float:right;font-weight:400">${s.compliant
+              ? `<span class="badge b-accepted">Insured${s.coi_days_left <= 30 ? ` · ${s.coi_days_left}d left` : ''}</span>`
+              : '<span class="badge b-declined">Not insured</span>'}</span>
+          </h3>
+          <table class="tbl" style="margin-bottom:10px">
+            <tr><td class="muted" style="width:96px">Trade</td><td class="strong">${esc(s.trade || '—')}</td></tr>
+            <tr><td class="muted">Contact</td><td>${esc(s.contact || '—')}${s.phone ? ` · <span class="mono">${esc(s.phone)}</span>` : ''}</td></tr>
+            <tr><td class="muted">Email</td><td>${esc(s.email || '—')}</td></tr>
+            <tr><td class="muted">License</td><td class="mono">${esc(s.license_number || '—')}</td></tr>
+            ${s.jobs.length ? `<tr><td class="muted">On jobs</td><td>${s.jobs.map(j => `<span class="mono">${esc(j.job_number)}</span> ${money0(j.contract_amount)}`).join('<br>')}</td></tr>` : ''}
+          </table>
+          <div class="docs">
+            ${s.documents.length ? s.documents.map(d => {
+              const days = d.expires_on ? Math.floor((new Date(d.expires_on) - new Date(todayStr())) / 864e5) : null;
+              const cls = days === null ? '' : days < 0 ? 'expired' : days <= 30 ? 'soon' : 'ok';
+              return `<div class="doc ${cls}">
+                <span class="dt">${esc(d.doc_type)}</span>
+                <span class="dd">${esc(d.carrier || d.policy_number || '')}</span>
+                <span class="de">${d.expires_on ? `${days < 0 ? 'expired' : 'expires'} ${esc(d.expires_on)}${days !== null ? ` (${days < 0 ? Math.abs(days) + 'd ago' : days + 'd'})` : ''}` : 'no expiry'}</span>
+                <button class="btn sm ghost" data-deldoc="${d.id}">×</button>
+              </div>`;
+            }).join('') : '<div class="empty" style="padding:12px;font-size:13px">No documents on file.</div>'}
+          </div>
+          <div style="margin-top:10px">
+            <button class="btn sm ghost" data-edit="${s.id}">Edit</button>
+            <button class="btn sm ghost" data-doc="${s.id}">+ Document</button>
+            <button class="btn sm ghost" data-assign="${s.id}">Assign to job</button>
+          </div>
+        </div>`).join('')}
+    </div>`;
+
+  view.onclick = async e => {
+    const t = e.target;
+    if (t.dataset.edit) return subModal(subs.find(s => s.id === +t.dataset.edit));
+    if (t.dataset.doc) return docModal(subs.find(s => s.id === +t.dataset.doc));
+    if (t.dataset.assign) return assignModal(subs.find(s => s.id === +t.dataset.assign));
+    if (t.dataset.deldoc) {
+      if (!confirm('Remove this document?')) return;
+      await api('subdocuments/' + t.dataset.deldoc, 'DELETE');
+      toast('Document removed', 'ok'); route();
+    }
+  };
+  $('#s-new').onclick = () => subModal();
+
+  function subModal(s) {
+    openModal(`
+      <div class="modal-head"><h2>${s ? 'Edit ' + esc(s.name) : 'Add Subcontractor'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="sf" class="form-grid">
+        <label class="fld full">Company<input name="name" required value="${esc(s?.name || '')}"></label>
+        <label class="fld">Trade<input name="trade" value="${esc(s?.trade || '')}" placeholder="Electrical, Plumbing…"></label>
+        <label class="fld">License #<input name="license_number" value="${esc(s?.license_number || '')}"></label>
+        <label class="fld">Contact<input name="contact" value="${esc(s?.contact || '')}"></label>
+        <label class="fld">Phone<input name="phone" value="${esc(s?.phone || '')}"></label>
+        <label class="fld full">Email<input name="email" value="${esc(s?.email || '')}"></label>
+        <label class="fld full">Notes<textarea name="notes">${esc(s?.notes || '')}</textarea></label>
+        ${s ? `<label class="fld full">Status<select name="active"><option value="1" ${s.active ? 'selected' : ''}>Active</option><option value="0" ${s.active ? '' : 'selected'}>Inactive</option></select></label>` : ''}
+      </form></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="sf-save">Save</button></div>`, { narrow: true });
+    $('#sf-save').onclick = async () => {
+      const f = formData($('#sf'));
+      if (!f.name) return toast('Company name is required', 'err');
+      if (s) await api('subcontractors/' + s.id, 'PUT', f); else await api('subcontractors', 'POST', f);
+      closeModal(); toast('Subcontractor saved', 'ok'); route();
+    };
+  }
+
+  function docModal(s) {
+    openModal(`
+      <div class="modal-head"><h2>Add document — ${esc(s.name)}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body"><form id="df" class="form-grid">
+        <label class="fld">Type<select name="doc_type">${['COI', 'W-9', 'License', 'Contract', 'Other'].map(d => `<option>${d}</option>`).join('')}</select></label>
+        <label class="fld">Carrier / issuer<input name="carrier" placeholder="e.g. Travelers"></label>
+        <label class="fld">Policy / doc number<input name="policy_number"></label>
+        <label class="fld">Issued<input name="issued_on" type="date"></label>
+        <label class="fld">Expires<input name="expires_on" type="date"></label>
+        <label class="fld full">Notes<input name="notes"></label>
+      </form>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">Expiry dates drive the warnings on this page and in AI Insights — always fill one in for a COI.</p></div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="df-save">Add</button></div>`, { narrow: true });
+    $('#df-save').onclick = async () => {
+      await api('subdocuments', 'POST', { ...formData($('#df')), sub_id: s.id });
+      closeModal(); toast('Document added', 'ok'); route();
+    };
+  }
+
+  function assignModal(s) {
+    openModal(`
+      <div class="modal-head"><h2>Assign ${esc(s.name)} to a job</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        ${s.compliant ? '' : '<div class="hr-note"><b>This sub has no current insurance certificate.</b> You can still record the assignment, but do not let them start until you have one.</div>'}
+        <form id="af" class="form-grid">
+          <label class="fld full">Job<select name="job_id">${jobs.filter(j => j.status !== 'completed').map(j => `<option value="${j.id}">${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}</select></label>
+          <label class="fld full">Scope<input name="scope" placeholder="What are they doing?"></label>
+          <label class="fld">Contract amount $<input name="contract_amount" type="number" step="any" value="0"></label>
+        </form>
+        <p class="muted" style="font-size:12.5px;margin-top:10px">The contract amount is counted as a cost against that job's profit.</p>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="af-save">Assign</button></div>`, { narrow: true });
+    $('#af-save').onclick = async () => {
+      await api('jobsubs', 'POST', { ...formData($('#af')), sub_id: s.id });
+      closeModal(); toast('Assigned to job', 'ok'); route();
+    };
+  }
 };
 
 // ---------------------------------------------------------------- REPORTS

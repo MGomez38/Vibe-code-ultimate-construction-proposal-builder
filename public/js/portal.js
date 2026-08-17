@@ -1,7 +1,8 @@
 /* ============================================================
    Crew Portal — the field-facing app.
-   Everything here runs as the signed-in employee; the server never
-   returns pricing or other crews' data to this surface.
+   Runs as the signed-in employee; the server never returns pricing
+   or other crews' data here. Works with no signal: punches and job
+   cards queue locally and sync when the phone gets bars again.
    ============================================================ */
 'use strict';
 
@@ -9,6 +10,61 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const view = $('#p-view');
 
+// ---------------------------------------------------------------- offline queue
+const QUEUE_KEY = 'dts_offline_queue';
+const loadQueue = () => { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch { return []; } };
+const saveQueue = q => localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+const newRef = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+
+function enqueue(type, payload) {
+  const q = loadQueue();
+  const op = { type, payload, at: new Date().toISOString(), client_ref: newRef() };
+  q.push(op);
+  saveQueue(q);
+  renderQueueBadge();
+  return op;
+}
+
+/** Push everything queued; anything the server accepts (or already had) leaves the queue. */
+async function drainQueue(silent = false) {
+  const q = loadQueue();
+  if (!q.length || !navigator.onLine) return { synced: 0 };
+  try {
+    const res = await fetch('/api/portal/sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ queue: q }),
+    });
+    if (!res.ok) throw new Error('sync failed');
+    const { results } = await res.json();
+    const accepted = new Set(results.filter(r => r.ok).map(r => r.client_ref));
+    const rejected = results.filter(r => r.error);
+    saveQueue(q.filter(op => !accepted.has(op.client_ref) && !rejected.some(r => r.client_ref === op.client_ref)));
+    renderQueueBadge();
+    if (accepted.size && !silent) msg(`${accepted.size} offline ${accepted.size === 1 ? 'entry' : 'entries'} synced`, 'ok');
+    if (rejected.length && !silent) msg(rejected[0].error, 'err');
+    return { synced: accepted.size };
+  } catch { return { synced: 0 }; }
+}
+
+function renderQueueBadge() {
+  const n = loadQueue().length;
+  const bar = $('#p-offline');
+  if (!bar) return;
+  if (!navigator.onLine) {
+    bar.className = 'p-offline show off';
+    bar.textContent = n ? `Offline — ${n} ${n === 1 ? 'entry' : 'entries'} saved on this phone, will sync automatically` : 'Offline — you can still clock in and write job cards';
+  } else if (n) {
+    bar.className = 'p-offline show pending';
+    bar.textContent = `Syncing ${n} saved ${n === 1 ? 'entry' : 'entries'}…`;
+  } else {
+    bar.className = 'p-offline';
+    bar.textContent = '';
+  }
+}
+
+window.addEventListener('online', async () => { renderQueueBadge(); await drainQueue(); route(); });
+window.addEventListener('offline', renderQueueBadge);
+
+// ---------------------------------------------------------------- api
 async function api(path, method = 'GET', body) {
   const opts = { method, headers: {} };
   if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
@@ -29,26 +85,99 @@ function elapsed(ts) {
   const mins = Math.max(0, Math.floor((Date.now() - parseTs(ts)) / 60000));
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
 }
-function msg(text, kind = '') {
+function msg(t, kind = '') {
   const el = document.createElement('div');
   el.className = 'p-msg ' + kind;
-  el.textContent = text;
+  el.textContent = t;
   $('#p-toast').appendChild(el);
-  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 320); }, 3200);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 320); }, 3400);
+}
+
+// cache the last good summary so the Today screen still renders with no signal
+const CACHE_KEY = 'dts_portal_cache';
+async function cachedApi(path) {
+  try {
+    const data = await api(path);
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+    c[path] = data;
+    localStorage.setItem(CACHE_KEY, JSON.stringify(c));
+    return data;
+  } catch (e) {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
+    if (c[path]) { return c[path]; }
+    throw e;
+  }
 }
 
 let me = null;
 
+// ---------------------------------------------------------------- photos
+/** Shrink a phone photo before upload — job sites rarely have good signal. */
+function downscale(file, maxDim = 1600, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error('Could not process photo')), 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read photo')); };
+    img.src = url;
+  });
+}
+
+async function uploadPhotos(cardId, files) {
+  const form = new FormData();
+  for (const f of files) {
+    const blob = f.type.startsWith('image/') ? await downscale(f) : f;
+    form.append('photo', blob, (f.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg');
+  }
+  const res = await fetch(`/api/portal/attachments?entity_id=${cardId}`, { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Upload failed');
+  return data;
+}
+
+// ---------------------------------------------------------------- voice dictation
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+function attachDictation(button, target) {
+  if (!SpeechRec) { button.style.display = 'none'; return; }
+  let rec = null, listening = false;
+  button.onclick = () => {
+    if (listening) { rec && rec.stop(); return; }
+    rec = new SpeechRec();
+    rec.lang = navigator.language || 'en-US';
+    rec.continuous = true;
+    rec.interimResults = true;
+    const base = target.value ? target.value.trim() + ' ' : '';
+    rec.onstart = () => { listening = true; button.classList.add('listening'); button.textContent = '● Listening — tap to stop'; };
+    rec.onresult = e => {
+      let text = '';
+      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+      target.value = base + text;
+    };
+    rec.onerror = e => { msg(e.error === 'not-allowed' ? 'Microphone permission denied' : 'Dictation stopped', 'err'); };
+    rec.onend = () => { listening = false; button.classList.remove('listening'); button.textContent = '🎤 Dictate'; };
+    try { rec.start(); } catch { msg('Dictation unavailable', 'err'); }
+  };
+}
+
 // ---------------------------------------------------------------- Today
 async function pageHome() {
-  const d = await api('portal/summary');
+  const d = await cachedApi('portal/summary');
   const open = d.open_entry;
   view.innerHTML = `
     <div class="pc clock-card">
       <div class="time" id="live-time"></div>
       <div class="date">${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</div>
       <div class="status-pill ${open ? 'on' : 'off'}"><i></i>${open ? 'On the clock' : 'Not clocked in'}</div>
-      ${open ? `<div class="on-since">Since ${fmtTime(open.clock_in)} · <b id="run">${elapsed(open.clock_in)}</b>${open.job_number ? ` on ${esc(open.job_number)}` : ' (general shift)'}</div>` : '<div class="on-since">Pick your job and clock in to start the day.</div>'}
+      ${open ? `<div class="on-since">Since ${fmtTime(open.clock_in)} · <b id="run">${elapsed(open.clock_in)}</b>${open.job_number ? ` on ${esc(open.job_number)}` : ' (general shift)'}</div>`
+             : '<div class="on-since">Pick your job and clock in to start the day.</div>'}
       <label class="fldlabel">${open ? 'Switch to another job' : 'Job'}</label>
       <select id="job-sel">
         <option value="">General shift / shop</option>
@@ -65,10 +194,8 @@ async function pageHome() {
       ${d.today.length ? d.today.map(s => `
         <div class="assign">
           <span class="jn ${s.job_number ? '' : 'shop'}">${esc(s.job_number || 'SHOP')}</span>
-          <div>
-            <div class="t">${esc(s.job_title || s.notes || 'Shop work')}</div>
-            <div class="s">${esc(s.shift)}${s.address ? ' · ' + esc(s.address) : ''}${s.notes && s.job_title ? ' · ' + esc(s.notes) : ''}</div>
-          </div>
+          <div><div class="t">${esc(s.job_title || s.notes || 'Shop work')}</div>
+          <div class="s">${esc(s.shift)}${s.address ? ' · ' + esc(s.address) : ''}${s.notes && s.job_title ? ' · ' + esc(s.notes) : ''}</div></div>
         </div>`).join('') : '<div class="p-empty">Nothing scheduled for you today — check with the office.</div>'}
     </div>
 
@@ -93,13 +220,21 @@ async function pageHome() {
   const iv = setInterval(() => { if (!tick()) clearInterval(iv); }, 1000);
 
   $('#btn-in').onclick = async () => {
-    const jobId = $('#job-sel').value;
-    if (open && String(open.job_id || '') === String(jobId)) return msg('You are already on that job', 'err');
-    try { const r = await api('portal/clock/in', 'POST', { job_id: jobId ? Number(jobId) : null }); msg(r.message, 'ok'); pageHome(); }
+    const jobId = $('#job-sel').value ? Number($('#job-sel').value) : null;
+    if (open && (open.job_id || null) === jobId) return msg('You are already on that job', 'err');
+    if (!navigator.onLine) {
+      enqueue('clock_in', { job_id: jobId });
+      return msg('Saved on this phone — will sync when you have signal', 'ok');
+    }
+    try { const r = await api('portal/clock/in', 'POST', { job_id: jobId }); msg(r.message, 'ok'); pageHome(); }
     catch (e) { msg(e.message, 'err'); }
   };
   const outBtn = $('#btn-out');
   if (outBtn) outBtn.onclick = async () => {
+    if (!navigator.onLine) {
+      enqueue('clock_out', {});
+      return msg('Clock-out saved on this phone — will sync when you have signal', 'ok');
+    }
     try { const r = await api('portal/clock/out', 'POST', {}); msg(r.message, 'ok'); pageHome(); }
     catch (e) { msg(e.message, 'err'); }
   };
@@ -107,35 +242,30 @@ async function pageHome() {
 
 // ---------------------------------------------------------------- Schedule
 async function pageWeek() {
-  const rows = await api('portal/schedule');
+  const rows = await cachedApi('portal/schedule');
   const byDate = {};
   rows.forEach(r => { (byDate[r.date] ||= []).push(r); });
   const start = new Date(); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
   const days = [...Array(14)].map((_, i) => { const d = new Date(start); d.setDate(d.getDate() + i); return d; });
 
-  view.innerHTML = `
-    <div class="pc">
-      <h3>Your Next Two Weeks</h3>
-      ${days.map(d => {
-        const key = d.toISOString().slice(0, 10);
-        const items = byDate[key] || [];
-        const isToday = key === todayStr();
-        return `<div class="day ${isToday ? 'today' : ''}">
-          <div class="dd"><div class="dow">${d.toLocaleDateString([], { weekday: 'short' })}</div><div class="num">${d.getDate()}</div></div>
-          <div style="flex:1">
-            ${items.length ? items.map(s => `
-              <div class="t">${esc(s.job_number ? s.job_number + ' — ' + s.job_title : s.notes || 'Shop work')}</div>
-              <div class="s">${esc(s.shift)}${s.address ? ' · ' + esc(s.address) : ''}</div>`).join('')
-              : '<div class="s">—</div>'}
-          </div>
-        </div>`;
-      }).join('')}
-    </div>`;
+  view.innerHTML = `<div class="pc"><h3>Your Next Two Weeks</h3>
+    ${days.map(d => {
+      const key = d.toISOString().slice(0, 10);
+      const items = byDate[key] || [];
+      return `<div class="day ${key === todayStr() ? 'today' : ''}">
+        <div class="dd"><div class="dow">${d.toLocaleDateString([], { weekday: 'short' })}</div><div class="num">${d.getDate()}</div></div>
+        <div style="flex:1">
+          ${items.length ? items.map(s => `
+            <div class="t">${esc(s.job_number ? s.job_number + ' — ' + s.job_title : s.notes || 'Shop work')}</div>
+            <div class="s">${esc(s.shift)}${s.address ? ' · ' + esc(s.address) : ''}</div>`).join('')
+            : '<div class="s">—</div>'}
+        </div></div>`;
+    }).join('')}</div>`;
 }
 
 // ---------------------------------------------------------------- My Hours
 async function pageHours() {
-  const rows = await api('portal/timesheet');
+  const rows = await cachedApi('portal/timesheet');
   const total = rows.reduce((s, r) => s + (r.hours || 0), 0);
   const weekStart = new Date(); weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
   const thisWeek = rows.filter(r => r.clock_in.slice(0, 10) >= weekStart.toISOString().slice(0, 10))
@@ -146,14 +276,11 @@ async function pageHours() {
       <div class="hstat"><div class="n">${Math.round(thisWeek * 10) / 10}</div><div class="l">This week</div></div>
       <div class="hstat"><div class="n">${Math.round(total * 10) / 10}</div><div class="l">Last 14 days</div></div>
     </div>
-    <div class="pc">
-      <h3>Your Punches</h3>
+    <div class="pc"><h3>Your Punches</h3>
       ${rows.length ? rows.map(r => `
         <div class="tsrow">
-          <div>
-            <div class="l1">${esc(r.job_number ? r.job_number + ' — ' + r.job_title : 'General shift')}</div>
-            <div class="l2">${parseTs(r.clock_in).toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${fmtTime(r.clock_in)} → ${r.clock_out ? fmtTime(r.clock_out) : 'now'}</div>
-          </div>
+          <div><div class="l1">${esc(r.job_number ? r.job_number + ' — ' + r.job_title : 'General shift')}</div>
+          <div class="l2">${parseTs(r.clock_in).toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${fmtTime(r.clock_in)} → ${r.clock_out ? fmtTime(r.clock_out) : 'now'}</div></div>
           <div class="hh ${r.clock_out ? '' : 'live'}">${r.hours !== null ? r.hours : '●'}</div>
         </div>`).join('') : '<div class="p-empty">No time recorded in the last two weeks.</div>'}
       <div class="p-empty" style="padding:14px 0 0;font-size:12.5px">Something look wrong? Tell the office — they can correct any punch.</div>
@@ -162,7 +289,7 @@ async function pageHours() {
 
 // ---------------------------------------------------------------- My Work
 async function pageWork() {
-  const d = await api('portal/summary');
+  const d = await cachedApi('portal/summary');
   view.innerHTML = `
     <div class="pc">
       <h3>Assigned To You<span class="r">${d.work_orders.length} open</span></h3>
@@ -174,7 +301,7 @@ async function pageWork() {
             <span class="tag t-${esc(w.priority)}">${esc(w.priority)}</span>
             <span class="tag t-${esc(w.status)}">${esc(cap(w.status))}</span>
             ${late ? '<span class="tag t-late">Past due</span>' : ''}
-            ${w.job_number ? `<span class="s" style="color:var(--mist);font-size:12.5px">${esc(w.job_number)}</span>` : ''}
+            ${w.job_number ? `<span style="color:var(--mist);font-size:12.5px">${esc(w.job_number)}</span>` : ''}
           </div>
           <div class="ttl">${esc(w.title)}</div>
           ${w.description ? `<div class="desc">${esc(w.description)}</div>` : ''}
@@ -195,13 +322,15 @@ async function pageWork() {
 
   view.onclick = async e => {
     const start = e.target.dataset.start, done = e.target.dataset.done;
+    if (!start && !done) return;
+    if (!navigator.onLine) return msg('You need signal to update a work order', 'err');
     try {
       if (start) { await api('portal/workorders/' + start, 'PUT', { status: 'in_progress' }); msg('Started — the office can see it', 'ok'); pageWork(); }
       if (done) { await api('portal/workorders/' + done, 'PUT', { status: 'completed' }); msg('Marked complete. Nice work.', 'ok'); pageWork(); }
     } catch (err) { msg(err.message, 'err'); }
   };
 
-  const materials = await api('portal/materials');
+  const materials = await cachedApi('portal/materials');
   const renderMats = q => {
     const list = materials.filter(m => !q || (m.name + ' ' + m.sku + ' ' + m.category).toLowerCase().includes(q.toLowerCase())).slice(0, 25);
     $('#mat-list').innerHTML = list.length ? list.map(m => `
@@ -217,7 +346,11 @@ async function pageWork() {
 
 // ---------------------------------------------------------------- Job Card
 async function pageCard() {
-  const [d, mine] = await Promise.all([api('portal/summary'), api('portal/jobcards')]);
+  const d = await cachedApi('portal/summary');
+  let mine = [];
+  try { mine = await api('portal/jobcards'); } catch { /* offline */ }
+  const queued = loadQueue().filter(op => op.type === 'job_card');
+
   view.innerHTML = `
     <div class="pc">
       <h3>Submit A Job Card</h3>
@@ -226,38 +359,93 @@ async function pageCard() {
           ${d.jobs.map(j => `<option value="${j.id}" ${d.today[0] && d.today[0].job_id === j.id ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}</select></div>
       <div class="fld"><label class="fldlabel">Date</label><input id="c-date" type="date" value="${todayStr()}"></div>
       <div class="fld"><label class="fldlabel">Hours worked</label><input id="c-hours" type="number" step="0.25" inputmode="decimal" value="8"></div>
-      <div class="fld"><label class="fldlabel">Work performed</label>
-        <textarea id="c-work" placeholder="What did you get done today?"></textarea></div>
+      <div class="fld">
+        <label class="fldlabel">Work performed</label>
+        <textarea id="c-work" placeholder="What did you get done today?"></textarea>
+        <button type="button" class="dictate" id="c-work-mic">🎤 Dictate</button>
+      </div>
       <div class="fld"><label class="fldlabel">Materials used</label>
         <input id="c-mats" placeholder="e.g. 40 studs, 6 sheets plywood"></div>
-      <div class="fld"><label class="fldlabel">Problems / delays <span style="font-weight:500;text-transform:none;letter-spacing:0">(optional)</span></label>
-        <textarea id="c-issues" placeholder="Anything the office needs to know — damage, extra scope, missing material" style="min-height:64px"></textarea></div>
+      <div class="fld">
+        <label class="fldlabel">Problems / delays <span style="font-weight:500;text-transform:none;letter-spacing:0">(optional)</span></label>
+        <textarea id="c-issues" placeholder="Damage, extra scope, missing material — anything the office should price as a change order" style="min-height:64px"></textarea>
+        <button type="button" class="dictate" id="c-issues-mic">🎤 Dictate</button>
+      </div>
+      <div class="fld">
+        <label class="fldlabel">Photos</label>
+        <label class="photo-drop" for="c-photos">
+          <span class="cam">📷</span>
+          <span>Take or choose photos</span>
+          <small>Before / after, damage, anything worth proving later</small>
+        </label>
+        <input id="c-photos" type="file" accept="image/*" capture="environment" multiple hidden>
+        <div class="thumbs" id="c-thumbs"></div>
+      </div>
       <button class="big-btn dark" id="c-save">Submit To Office</button>
     </div>
 
     <div class="pc">
       <h3>Your Recent Cards</h3>
+      ${queued.map(op => `
+        <div class="assign">
+          <span class="jn shop">QUEUED</span>
+          <div style="flex:1"><div class="t">${esc(String(op.payload.work_performed || '').slice(0, 90))}</div>
+          <div class="s">${esc(op.payload.work_date || '')} · ${op.payload.hours || 0} hrs <span class="tag t-open" style="margin-left:4px">Waiting for signal</span></div></div>
+        </div>`).join('')}
       ${mine.length ? mine.map(c => `
         <div class="assign">
           <span class="jn ${c.job_number ? '' : 'shop'}">${esc(c.job_number || 'SHOP')}</span>
           <div style="flex:1">
             <div class="t">${esc(c.work_performed.slice(0, 90))}${c.work_performed.length > 90 ? '…' : ''}</div>
             <div class="s">${esc(c.work_date)} · ${c.hours} hrs <span class="tag t-${esc(c.status)}" style="margin-left:4px">${esc(cap(c.status))}</span></div>
+            ${c.photos && c.photos.length ? `<div class="thumbs">${c.photos.map(p => `<a href="/uploads/${esc(p.filename)}" target="_blank"><img src="/uploads/${esc(p.filename)}" alt=""></a>`).join('')}</div>` : ''}
           </div>
-        </div>`).join('') : '<div class="p-empty">No job cards submitted yet.</div>'}
+        </div>`).join('') : (queued.length ? '' : '<div class="p-empty">No job cards submitted yet.</div>')}
     </div>`;
+
+  attachDictation($('#c-work-mic'), $('#c-work'));
+  attachDictation($('#c-issues-mic'), $('#c-issues'));
+
+  let picked = [];
+  $('#c-photos').onchange = e => {
+    picked = [...e.target.files];
+    $('#c-thumbs').innerHTML = picked.map(f => `<div class="thumb-pending">${esc(f.name.slice(0, 14))}</div>`).join('');
+    picked.forEach((f, i) => {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const el = $$('#c-thumbs .thumb-pending')[i];
+        if (el) el.outerHTML = `<img src="${ev.target.result}" alt="">`;
+      };
+      reader.readAsDataURL(f);
+    });
+  };
 
   $('#c-save').onclick = async () => {
     const work = $('#c-work').value.trim();
     if (!work) return msg('Tell us what work you performed', 'err');
+    const payload = {
+      job_id: $('#c-job').value ? Number($('#c-job').value) : null,
+      work_date: $('#c-date').value, hours: Number($('#c-hours').value) || 0,
+      work_performed: work, materials_used: $('#c-mats').value.trim(), issues: $('#c-issues').value.trim(),
+    };
+    if (!navigator.onLine) {
+      enqueue('job_card', payload);
+      msg(picked.length ? 'Card saved on this phone — photos need signal, add them when you are back online' : 'Card saved on this phone — will sync when you have signal', 'ok');
+      return pageCard();
+    }
+    const btn = $('#c-save'); btn.disabled = true; btn.textContent = 'Submitting…';
     try {
-      const r = await api('portal/jobcards', 'POST', {
-        job_id: $('#c-job').value ? Number($('#c-job').value) : null,
-        work_date: $('#c-date').value, hours: Number($('#c-hours').value) || 0,
-        work_performed: work, materials_used: $('#c-mats').value.trim(), issues: $('#c-issues').value.trim(),
-      });
-      msg(r.message, 'ok'); pageCard();
-    } catch (e) { msg(e.message, 'err'); }
+      const r = await api('portal/jobcards', 'POST', payload);
+      if (picked.length && r.id) {
+        btn.textContent = `Uploading ${picked.length} photo${picked.length === 1 ? '' : 's'}…`;
+        try { await uploadPhotos(r.id, picked); } catch (e) { msg('Card saved, but photos failed: ' + e.message, 'err'); }
+      }
+      msg(r.message, 'ok');
+      pageCard();
+    } catch (e) {
+      msg(e.message, 'err');
+      btn.disabled = false; btn.textContent = 'Submit To Office';
+    }
   };
 }
 
@@ -266,24 +454,35 @@ const TABS = { home: pageHome, week: pageWeek, hours: pageHours, work: pageWork,
 
 async function route() {
   const tab = (location.hash.replace(/^#\//, '') || 'home').split('/')[0];
-  const fn = TABS[tab] || pageHome;
   $$('.p-tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
   view.innerHTML = '<div class="p-empty">Loading…</div>';
-  try { await fn(); } catch (e) { view.innerHTML = `<div class="p-empty">⚠ ${esc(e.message)}</div>`; }
+  try { await (TABS[tab] || pageHome)(); }
+  catch (e) { view.innerHTML = `<div class="p-empty">⚠ ${esc(e.message)}<br><br>${navigator.onLine ? '' : 'You are offline — clock in and job cards still work from the Today tab.'}</div>`; }
   window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
 
 $('#p-logout').onclick = async () => {
-  await fetch('/api/auth/logout', { method: 'POST' });
+  if (loadQueue().length && !confirm('You have entries that have not synced yet. Sign out anyway?')) return;
+  await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
   location.href = '/login';
 };
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
 (async () => {
   try {
     me = await api('auth/me');
-    $('#p-who').textContent = me.name;
-    $('#p-role').textContent = me.employee_role || 'Crew Portal';
-  } catch { return; }
+    localStorage.setItem('dts_me', JSON.stringify(me));
+  } catch {
+    const cached = localStorage.getItem('dts_me');
+    if (!cached) return;
+    me = JSON.parse(cached);   // offline: trust the cached identity for display only
+  }
+  $('#p-who').textContent = me.name;
+  $('#p-role').textContent = me.employee_role || 'Crew Portal';
+  renderQueueBadge();
+  await drainQueue(true);
   route();
+  setInterval(() => drainQueue(true), 60000);
 })();

@@ -1,16 +1,16 @@
 # DTS Command Center
 
-All-in-one construction operations platform for **Diverse Trade Services** — quotes you can email straight to customers, crew scheduling, material inventory, purchasing, shop work orders, a time clock, and a searchable profit archive.
+All-in-one construction operations platform for **Diverse Trade Services** — quotes that price themselves off your own history, change orders customers sign online, invoicing and receivables, crew scheduling with capacity warnings, inventory, purchasing, shop work orders, a time clock, payroll, and subcontractor compliance.
 
-Two separate experiences share one database:
+Three surfaces share one database:
 
 | Surface | Who | What they get |
 |---|---|---|
-| **Command Center** (`/`) | Office / admin | Everything — pricing, costs, margins, scheduling, purchasing, reports, settings |
-| **Crew Portal** (`/portal`) | Field employees | Mobile-first: clock in/out, their schedule, their hours, assigned work, job cards. **No pricing, costs or margins — ever** |
-| **Public proposal** (`/q/<token>`) | Customers | A branded proposal page they can read, print, and approve or decline online. No login |
+| **Command Center** (`/`) | Office / admin | Everything — pricing, costs, margins, billing, scheduling, payroll, reports, settings |
+| **Crew Portal** (`/portal`) | Field employees | Mobile-first, **works with no signal**: clock in, schedule, hours, assigned work, job cards with photos and voice. **No pricing, costs or margins — ever** |
+| **Customer links** (`/q/…`, `/co/…`, `/inv/…`) | Customers | Branded proposals, change orders and invoices they can read, print, and approve online. No login |
 
-**Zero dependencies.** Runs on Node.js 22.5+ alone — built-in SQLite, a hand-rolled SMTP client, no `npm install`.
+**Zero dependencies.** Node.js 22.5+ alone — built-in SQLite, a hand-rolled SMTP client and multipart parser, no `npm install`.
 
 ## Run it
 
@@ -18,7 +18,7 @@ Two separate experiences share one database:
 node server.js
 ```
 
-Open **http://localhost:3000** — you'll land on the sign-in page. The database is created and seeded with realistic demo data on first launch (`data/dts.db`; delete that folder to reset).
+Open **http://localhost:3000**. The database is created and seeded with realistic demo data on first launch (`data/dts.db`; delete the `data/` folder to reset).
 
 ### Demo logins
 
@@ -27,50 +27,61 @@ Open **http://localhost:3000** — you'll land on the sign-in page. The database
 | `mike` | `admin123` | Command Center (admin) |
 | `carlos`, `jess`, `andre`, `sam`, `kayla` | `crew123` | Crew Portal |
 
-Change these before real use — **Users & Access** for other people's logins, the avatar menu (top right) for your own password.
+Change these before real use — **Users & Access** for other people, the avatar menu for your own.
 
-## Emailing quotes
+## The parts that make you money
 
-Open **Quotes → ✉ Email** on any quote. You get a pre-written message, an editable subject, and the full itemized proposal attached automatically along with a secure approval link.
+**Estimating that learns.** Every quote line you have ever sent, every work order you have ever built, and every material in stock is searchable from inside the quote builder — with what you charged, the range, and when you last used it. One click drops it in at your historical price. Meanwhile the system watches your labor estimates against the clock: the seeded demo company bids about 11% light, so a 60-hour estimate gets flagged as *"on past jobs that would land closer to 66.6 hours — roughly $429 of labor you have not billed for."* Similar past jobs and their real margins show up next to it, before you send anything.
 
-When the customer clicks **Approve This Proposal**, the quote flips to *accepted* in your Command Center instantly, with their typed signature recorded. From there, **Won → Job** turns it into a job card and a shop work order in one click.
+**Change orders.** Priced like a quote, emailed to the customer, approved online with a typed signature. An approval automatically raises the job's contract value, extends the end date by the change order's schedule days, and flows into profit — so scope creep stops eating your margin silently. When a crew member flags a problem in a field job card, Insights nags you until it is either priced as a change order or dismissed.
 
-**Before it can actually send**, fill in **Settings → Email Delivery** with your mail provider's SMTP details (for Gmail/Google Workspace: `smtp.gmail.com`, port 587, STARTTLS, using an [app password](https://support.google.com/accounts/answer/185833) — not your normal password). Also set *Public site address* to the address customers can reach, so approval links point somewhere real.
+**Invoicing and receivables.** Deposit, progress and final invoices with retainage held back and released at closeout. "Bill a job by % complete" reads the contract value (including approved change orders), subtracts what you have already billed, and drafts the difference. Record payments, watch the aging buckets, and get told which invoices need a phone call rather than another emailed copy.
 
-Until SMTP is configured, sending writes a **full preview of the email to `data/outbox/`** and links it from the Sent Proposals list, so you can see exactly what a customer would receive without sending anything.
+## The parts that keep the field working
 
-## What's inside
+**Photos and voice from the job site.** Crew attach photos to any job card — the browser downscales them before upload so they go through on bad signal — and can dictate the work performed and problem notes instead of typing with gloves on. Photos appear on the job card in the office and on the job's detail page.
 
-| Module | What it does |
-|---|---|
-| **Dashboard** | Live KPIs, a 6-month revenue vs. profit chart, today's crew, and budget-burn bars on every in-progress job. |
-| **Time Clock** | Shop-tablet kiosk with per-employee PINs. Crew clock straight onto a job; hours and labor cost land on that job card. |
-| **Crew Schedule** | Week grid — click **+** to assign anyone to a job or shop time, click an assignment to remove it. |
-| **Quotes** | Line-item estimates with labor, markup and tax; pull items from inventory at your sell prices; email to the customer; one-click convert to job + work order. |
-| **Jobs** | Sold price vs. real cost as it happens — materials (auto-deducted from inventory), labor from the time clock, and linked shop work — with live profit and margin. |
-| **Work Orders** | Shop/fabrication queue with priorities, due dates, assignments, and per-item cost/price. |
-| **Field Job Cards** | Daily reports crew submit from their phones — hours, work performed, materials used, and problems flagged for the office to approve. |
-| **Inventory** | SKUs, locations, vendors, on-hand quantities, reorder points, low-stock warnings. |
-| **Purchasing** | POs with suggested reorder quantities; receiving adds stock and refreshes unit costs. |
-| **Archive & Profit Search** | Search every past job, work order and quote — including line items — and see sold price, cost, profit and margin. |
-| **Reports** | Revenue and margin by client, crew hours and utilization, biggest material spend, and job profitability ranked by margin. |
-| **AI Insights** | Flags jobs under target margin, low stock with usage-based order suggestions, overdue work orders, stale quotes to chase, unreviewed job cards, win rate and top clients. |
-| **Users & Access** | Create logins, set admin vs. crew, link them to employee records, disable people who leave — plus an activity log of who did what. |
-| **Settings** | Company details, pricing defaults, proposal terms, and email delivery. |
+**Works with no signal.** The portal is an installable PWA. In a basement with no bars, clock-ins, clock-outs and job cards save to the phone and sync automatically the moment signal returns, keeping the real timestamps. Replayed entries are de-duplicated server-side, so a flaky connection never double-punches anyone.
+
+## The parts that keep you out of trouble
+
+**Capacity-aware scheduling.** The dashboard shows committed versus available crew hours for the next three weeks and flags any week you have oversold, plus the exact people who are double-booked and on which days — before they show up at the wrong site.
+
+**Subcontractor compliance.** Certificates of insurance, W-9s and licenses with expiry dates. Expired or missing COIs raise a red banner and a high-priority insight, because your policy will not cover work by an uninsured sub.
+
+**Payroll and certified payroll.** Hours, overtime past 40 in a week at 1.5×, and gross pay straight from the time clock, exportable as CSV. For public work, a WH-347 style certified payroll report per job per week with day-by-day hours, classification, fringe and total package.
+
+## Everything else
+
+Dashboard KPIs and a six-month revenue/profit chart · crew schedule grid · PIN kiosk time clock · material inventory with reorder points · purchase orders that receive into stock · shop work order queue · field job card review · archive and profit search across every job, work order, quote and change order · reports on client margin, crew utilization and material spend · client and employee directories · users, roles and an activity log.
+
+**AI Insights** ties it together: jobs under target margin, jobs running over their labor estimate, overdue receivables, unsigned change orders, field issues with no change order raised, expiring insurance, overcommitted weeks, low stock with usage-based order quantities, stale quotes, unreviewed job cards, win rate and top clients — sorted by how much they should worry you.
+
+## Emailing customers
+
+**Quotes → ✉ Email**, **Change Orders → ✉ Send**, **Invoices → ✉**. Each sends a branded document with a secure link the customer can open on any device. Quotes and change orders can be approved right there; approvals land in your console instantly with a signature.
+
+Before anything actually sends, fill in **Settings → Email Delivery** with your provider's SMTP details (Gmail/Workspace: `smtp.gmail.com`, port 587, STARTTLS, using an [app password](https://support.google.com/accounts/answer/185833)). Set *Public site address* to an address customers can reach so links work from outside your office.
+
+Until SMTP is configured, sending writes a **full preview of the email to `data/outbox/`** and links it from Sent Proposals — so you can see exactly what a customer would receive without sending anything.
 
 ## Security notes
 
-- Passwords are hashed with scrypt and a per-user salt; sessions are random 256-bit tokens in HttpOnly, SameSite cookies, expiring after 14 days.
-- Role checks are enforced **server-side**, not just in the UI — a crew login gets `403` on every admin endpoint, and the portal's material lookup omits cost and price columns entirely.
-- Changing someone's password (or deleting them) invalidates their existing sessions.
-- The last active admin can't be demoted, disabled or deleted.
-- Customer proposal links carry a 144-bit random token and expose only that one quote.
-- **Put this behind HTTPS before exposing it to the internet** — session cookies and SMTP credentials should never cross a plain HTTP connection. A reverse proxy (Caddy, nginx, Cloudflare Tunnel) is the easiest way.
+- Passwords hashed with scrypt and a per-user salt; sessions are random 256-bit tokens in HttpOnly, SameSite cookies, expiring after 14 days.
+- Role checks are enforced **server-side**. A crew login gets `403` on every admin endpoint, and the portal's material lookup omits cost and price columns entirely.
+- Crew can only attach photos to their own job cards and only update work orders assigned to them.
+- Changing a password (or deleting a user) invalidates that user's existing sessions. The last active admin cannot be demoted, disabled or deleted.
+- Customer document links carry a 144-bit random token and expose exactly one document.
+- Uploads are restricted to images and PDFs, capped at 12 MB, and stored outside the web root — served only to signed-in users.
+- **Put this behind HTTPS before exposing it to the internet.** Session cookies and SMTP credentials should never cross plain HTTP. A reverse proxy (Caddy, nginx, Cloudflare Tunnel) is the easiest way.
 
 ## Tech notes
 
 - **Backend:** plain Node.js (`node:http`, `node:sqlite`, `node:crypto`, `node:tls`). REST API under `/api`.
 - **Frontend:** hand-built SPAs, no framework and no build step.
 - **Email:** `mailer.js` is a from-scratch SMTP client — implicit TLS (465) or STARTTLS (587), AUTH PLAIN/LOGIN, MIME multipart.
-- **Data:** SQLite at `data/dts.db` (WAL mode). Back it up by copying that file.
+- **Uploads:** `lib/uploads.js` is a from-scratch `multipart/form-data` parser.
+- **Money:** every financial calculation lives in `lib/finance.js`, so a job's profit means the same thing on the dashboard, in reports, and on an invoice.
+- **Voice dictation** uses the browser's built-in speech recognition — available in Chrome, Edge and Safari; the button hides itself elsewhere. Nothing is sent to a third party by this app.
+- **Data:** SQLite at `data/dts.db` (WAL mode), uploads in `data/uploads/`. Back up by copying the `data/` folder.
 - `PORT=8080 node server.js` to change the port.
