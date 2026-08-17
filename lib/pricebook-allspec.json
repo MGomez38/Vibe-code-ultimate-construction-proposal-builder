@@ -1269,90 +1269,90 @@
    ]
   },
   {
-   "name": "Ductmate 35 (0.8 discount)",
+   "name": "Ductmate 35 (0.7 discount)",
    "unit": "\"",
    "group": "Ductwork",
    "size_label": "Half girth",
    "sizes": [
     {
      "size": 18,
-     "price": 32.63
+     "price": 28.55
     },
     {
      "size": 20,
-     "price": 34.48
+     "price": 30.17
     },
     {
      "size": 24,
-     "price": 37.36
+     "price": 32.7
     },
     {
      "size": 28,
-     "price": 40.25
+     "price": 35.22
     },
     {
      "size": 32,
-     "price": 43.13
+     "price": 37.74
     },
     {
      "size": 36,
-     "price": 46.02
+     "price": 40.26
     },
     {
      "size": 40,
-     "price": 48.9
+     "price": 42.79
     },
     {
      "size": 44,
-     "price": 51.79
+     "price": 45.31
     },
     {
      "size": 48,
-     "price": 54.67
+     "price": 47.84
     },
     {
      "size": 50,
-     "price": 56.52
+     "price": 49.46
     },
     {
      "size": 56,
-     "price": 60.44
+     "price": 52.89
     },
     {
      "size": 60,
-     "price": 63.32
+     "price": 55.41
     },
     {
      "size": 64,
-     "price": 66.21
+     "price": 57.93
     },
     {
      "size": 68,
-     "price": 69.09
+     "price": 60.45
     },
     {
      "size": 72,
-     "price": 71.98
+     "price": 62.98
     },
     {
      "size": 76,
-     "price": 74.86
+     "price": 65.5
     },
     {
      "size": 80,
-     "price": 77.74
+     "price": 68.03
     },
     {
      "size": 84,
-     "price": 80.63
+     "price": 70.55
     },
     {
      "size": 88,
-     "price": 83.51
+     "price": 73.07
     },
     {
      "size": 96,
-     "price": 94.97
+     "price": 83.1
     }
    ]
   },
