@@ -226,6 +226,7 @@ const TITLES = {
   users: ['Users & Access', 'Who can sign in, and what they can see'],
   settings: ['Settings', 'Company details, pricing defaults and email delivery'],
   inventory: ['Material Inventory', 'Stock on hand and reorder points'],
+  duct: ['Duct Calculator', 'Priced from your own steel, liner and labor rates'],
   purchasing: ['Purchasing', 'Material orders and receiving'],
   archive: ['Archive & Profit Search', 'Every job and work order, what it sold for, what it cost'],
   insights: ['AI Insights', 'What the numbers are trying to tell you'],
@@ -237,6 +238,9 @@ async function route() {
   const hash = location.hash.replace(/^#\//, '') || 'dashboard';
   const [page, param] = hash.split('/');
   const fn = PAGES[page] || PAGES.dashboard;
+  // A modal left open across a navigation leaves its backdrop over the new
+  // page, and every click lands on nothing.
+  closeModal();
   const [title, sub] = TITLES[page] || TITLES.dashboard;
   $('#page-title').textContent = title;
   $('#page-sub').textContent = sub;
@@ -2467,6 +2471,144 @@ PAGES.invoices = async () => {
 const round1 = n => Math.round((Number(n) || 0) * 10) / 10;
 
 // ---------------------------------------------------------------- SHOP CONSUMPTION
+/**
+ * Duct calculator.
+ *
+ * The grid in the workbook only ever showed one gauge. This shows every
+ * combination, priced from the shop's own rates, with the metal, the labor
+ * and the liner separated so an estimator can see where the money is before
+ * the number goes on a proposal.
+ */
+PAGES.duct = async () => {
+  const d = await api('duct');
+  if (!d.ok) {
+    view.innerHTML = `<div class="card"><div class="empty" style="padding:40px 20px;line-height:1.7">
+      <h3 style="font-size:16px;margin-bottom:8px">No duct formula saved yet</h3>
+      ${esc(d.message)}<br><br>
+      <a class="btn primary" href="#/inventory">Go to Inventory</a></div></div>`;
+    return;
+  }
+  const m = d.model;
+  const girths = [...new Set(d.sizes.map(s => s.girth))].sort((a, b) => a - b);
+  const lengths = [...new Set(d.sizes.map(s => s.length))].sort((a, b) => a - b);
+  const gauges = Object.keys(m.steel_per_sqft).sort((a, b) => b - a);
+  const liners = ['0', ...Object.keys(m.liner_per_sqft).sort((a, b) => a - b)];
+  const classes = Object.keys(m.labor_rate);
+  const opt = (v, sel, suffix = '') => `<option value="${v}" ${String(v) === String(sel) ? 'selected' : ''}>${esc(v)}${esc(suffix)}</option>`;
+
+  view.innerHTML = `
+    <div class="grid grid-2">
+      <div>
+        <div class="card">
+          <h3>Price a piece</h3>
+          <form id="dc-form" class="form-grid">
+            <label class="fld">Girth (half the perimeter)<select name="girth">${girths.map(g => opt(g, 20, '"')).join('')}</select></label>
+            <label class="fld">Length<select name="length">${lengths.map(l => opt(l, 12, '"')).join('')}</select></label>
+            <label class="fld">Gauge<select name="gauge">${gauges.map(g => opt(g, m.default_gauge, 'ga')).join('')}</select></label>
+            <label class="fld">Liner<select name="liner">${liners.map(l => `<option value="${l}" ${l === '0' ? 'selected' : ''}>${l === '0' ? 'None' : esc(l) + '"'}</option>`).join('')}</select></label>
+            <label class="fld">Labor class<select name="labor_class">${classes.map(c => opt(c, m.default_labor_class, ` — $${m.labor_rate[c].toFixed(2)}/unit`)).join('')}</select></label>
+            <label class="fld">How many<input name="qty" type="number" min="1" step="1" value="1"></label>
+          </form>
+          <div id="dc-out"></div>
+        </div>
+
+        <div class="card">
+          <h3>Compare every gauge <span class="hint">same size, same liner</span></h3>
+          <div id="dc-compare"><div class="empty">…</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h3>Your rates <span class="hint">change one, everything re-prices</span></h3>
+          <p class="muted" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">
+            Read out of your fabrication sheet. When steel moves, change it here —
+            all ${d.sizes.length} sizes follow.</p>
+          <form id="dc-rates" class="form-grid">
+            ${gauges.map(g => `<label class="fld">${esc(g)}ga steel $/sq ft<input data-rate="steel" data-key="${esc(g)}" type="number" step="any" value="${m.steel_per_sqft[g]}"></label>`).join('')}
+            ${Object.keys(m.liner_per_sqft).sort((a, b) => a - b).map(l => `<label class="fld">${esc(l)}" liner $/sq ft<input data-rate="liner" data-key="${esc(l)}" type="number" step="any" value="${Number(m.liner_per_sqft[l]).toFixed(4)}"></label>`).join('')}
+            ${classes.map(c => `<label class="fld">Labor class ${esc(c.toUpperCase())} $/unit<input data-rate="labor" data-key="${esc(c)}" type="number" step="any" value="${Number(m.labor_rate[c]).toFixed(4)}"></label>`).join('')}
+            <label class="fld">Markup %<input data-rate="markup" type="number" step="any" value="${Math.round((m.markup - 1) * 1000) / 10}"></label>
+          </form>
+          <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
+            <button class="btn primary sm" id="dc-save">Save rates</button>
+            <span class="muted" id="dc-saved" style="font-size:12px"></span>
+          </div>
+          <p class="muted" style="font-size:12px;margin-top:12px;line-height:1.6">
+            Labor times per size come from your grid and are not edited here —
+            re-import the sheet to change them. ${d.sizes.length} sizes on file,
+            girths ${girths[0]}"–${girths[girths.length - 1]}".</p>
+        </div>
+      </div>
+    </div>`;
+
+  const spec = () => {
+    const f = formData($('#dc-form'));
+    return { girth: +f.girth, length: +f.length, gauge: f.gauge, liner: +f.liner, labor_class: f.labor_class, qty: Math.max(1, +f.qty || 1) };
+  };
+
+  async function recalc() {
+    const s = spec();
+    const r = await api('duct/price', 'POST', s);
+    const box = $('#dc-out');
+    if (!r.ok) { box.innerHTML = `<div class="est-warn medium"><h5>Cannot price that</h5><p>${esc(r.error)}</p></div>`; $('#dc-compare').innerHTML = ''; return; }
+    const b = r.breakdown;
+    box.innerHTML = `
+      <div class="dc-total">
+        <div><span>Each</span><b>${money(r.price)}</b></div>
+        ${s.qty > 1 ? `<div><span>${s.qty} pieces</span><b>${money(r.price * s.qty)}</b></div>` : ''}
+      </div>
+      ${r.used.exact_size ? '' : '<div class="est-warn medium"><h5>That exact size is not timed in your grid</h5><p>Labor was taken from the nearest size on file. Check it before it goes out.</p></div>'}
+      <table class="tbl dc-break"><tbody>
+        <tr><td>Steel — ${b.steel_sqft} sq ft of ${esc(r.used.gauge)}ga at ${money(r.used.steel_per_sqft)}/sq ft</td><td class="num">${money(b.steel)}</td></tr>
+        ${b.liner_material ? `<tr><td>Liner — ${b.liner_sqft} sq ft of ${r.used.liner}"</td><td class="num">${money(b.liner_material)}</td></tr>` : ''}
+        <tr><td>Fabrication labor — ${Math.round(r.used.fab_units * 100) / 100} units at ${money(r.used.labor_rate)}</td><td class="num">${money(b.fab_labor)}</td></tr>
+        ${b.liner_labor ? `<tr><td>Liner labor</td><td class="num">${money(b.liner_labor)}</td></tr>` : ''}
+        <tr class="sub"><td>Cost</td><td class="num">${money(b.subtotal)}</td></tr>
+        <tr><td>Markup ${b.markup_pct}%</td><td class="num">${money(r.price - b.subtotal)}</td></tr>
+      </tbody></table>
+      <button class="btn dark sm" id="dc-copy" style="margin-top:12px">Copy as a quote line</button>`;
+
+    $('#dc-copy').onclick = () => {
+      const line = `${s.qty} × Duct ${s.girth}" girth × ${s.length}" — ${s.gauge}ga${s.liner ? `, ${s.liner}" liner` : ''} @ ${money(r.price)} = ${money(r.price * s.qty)}`;
+      navigator.clipboard?.writeText(line);
+      toast('Copied — paste it into the quote description', 'ok');
+    };
+
+    // the same piece in every gauge, so the estimator can see what a step up costs
+    const rows = await Promise.all(gauges.map(g => api('duct/price', 'POST', { ...s, gauge: g })));
+    const base = rows.find(x => x.ok && String(x.used.gauge) === String(s.gauge));
+    $('#dc-compare').innerHTML = `<table class="tbl"><thead><tr><th>Gauge</th><th class="num">Each</th><th class="num">vs ${esc(s.gauge)}ga</th><th class="num">${s.qty} ${s.qty === 1 ? 'piece' : 'pieces'}</th></tr></thead><tbody>
+      ${rows.map((x, i) => !x.ok ? '' : `<tr class="${String(gauges[i]) === String(s.gauge) ? 'dc-here' : ''}">
+        <td class="strong">${esc(gauges[i])}ga</td>
+        <td class="num">${money(x.price)}</td>
+        <td class="num muted">${base && x.price !== base.price
+          ? (x.price > base.price ? '+' : '−') + money(Math.abs(x.price - base.price)) : '—'}</td>
+        <td class="num">${money(x.price * s.qty)}</td></tr>`).join('')}
+    </tbody></table>`;
+  }
+
+  $('#dc-form').addEventListener('input', recalc);
+  recalc();
+
+  $('#dc-save').onclick = async () => {
+    const steel = {}, liner = {}, labor = {};
+    let markup = m.markup;
+    $$('[data-rate]').forEach(el => {
+      const v = Number(el.value);
+      if (el.dataset.rate === 'steel') steel[el.dataset.key] = v;
+      if (el.dataset.rate === 'liner') liner[el.dataset.key] = v;
+      if (el.dataset.rate === 'labor') labor[el.dataset.key] = v;
+      if (el.dataset.rate === 'markup') markup = 1 + v / 100;
+    });
+    await api('duct', 'PUT', { steel_per_sqft: steel, liner_per_sqft: liner, labor_rate: labor, markup });
+    Object.assign(m, { steel_per_sqft: steel, liner_per_sqft: liner, labor_rate: labor, markup });
+    $('#dc-saved').textContent = 'Saved ' + new Date().toLocaleTimeString();
+    toast('Rates saved — every size re-priced', 'ok');
+    recalc();
+  };
+};
+
 PAGES.consumption = async () => {
   const from = new Date(); from.setDate(from.getDate() - 30);
   let range = { from: from.toISOString().slice(0, 10), to: todayStr() };
