@@ -55,7 +55,8 @@ function makeAuth(db) {
     const token = parseCookies(req)[COOKIE];
     if (!token) return null;
     const row = db.prepare(`
-      SELECT u.id, u.username, u.role, u.employee_id, u.active, s.token, e.name AS employee_name, e.role AS employee_role
+      SELECT u.id, u.username, u.role, u.employee_id, u.company_id, u.active, s.token,
+             e.name AS employee_name, e.role AS employee_role
       FROM sessions s
       JOIN users u ON u.id = s.user_id
       LEFT JOIN employees e ON e.id = u.employee_id

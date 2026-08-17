@@ -1,6 +1,13 @@
-# DTS Command Center
+# All Spec / DTS Command Center
 
-All-in-one construction operations platform for **Diverse Trade Services** — quotes that price themselves off your own history, change orders customers sign online, invoicing and receivables, crew scheduling with capacity warnings, inventory, purchasing, shop work orders, a time clock, payroll, and subcontractor compliance.
+Operations platform for a two-company group:
+
+- **All Spec Sheetmetal** — the sheet metal and iron fabrication shop
+- **Diverse Trade Services** — construction and installation
+
+Two separate legal entities that work hand in hand: DTS wins the job and installs what All Spec builds. Each keeps its own books, numbering, branding, crew, stock and customers — and the group view shows both together with the work that flows between them netted out.
+
+Quotes that price themselves off your own history, change orders customers sign online, invoicing and receivables, crew scheduling with capacity warnings, inventory, purchasing, shop work orders, a time clock, payroll, and subcontractor compliance — all of it per entity.
 
 Three surfaces share one database:
 
@@ -22,12 +29,29 @@ Open **http://localhost:3000**. The database is created and seeded with realisti
 
 ### Demo logins
 
-| Username | Password | Lands in |
+| Username | Password | Sees |
 |---|---|---|
-| `mike` | `admin123` | Command Center (admin) |
-| `carlos`, `jess`, `andre`, `sam`, `kayla` | `crew123` | Crew Portal |
+| `mike` | `admin123` | **Both companies** — owner, can switch entities or view the group |
+| `dtsoffice` | `admin123` | DTS books only |
+| `asoffice` | `admin123` | All Spec books only |
+| `carlos`, `jess`, `andre`, `kayla` | `crew123` | DTS crew portal |
+| `sam`, `ruben`, `tess` | `crew123` | All Spec shop portal |
 
 Change these before real use — **Users & Access** for other people, the avatar menu for your own.
+
+## How the two companies work together
+
+**Switching books.** The owner gets an entity switcher at the top of the sidebar: **Group**, **AS**, **DTS**. The whole console rebrands — All Spec blue, DTS amber — so you always know whose books you are in. Staff pinned to one entity never see the other, and the switcher cannot widen that: the pin wins over the cookie, enforced server-side.
+
+**Separate everything.** Each entity has its own document numbering (`AS-WO-5121`, `DTS-J-2308`), its own customers, crew, stock, pricing defaults, terms, payment link, brand colour and cash position. All Spec sells to outside customers too — it is a real shop, not a cost centre.
+
+**Sending work across.** On any DTS job, hit **⚒ Send to the shop**. That raises a work order on All Spec's books against the DTS job. What you enter as the price is the transfer price: it becomes All Spec's revenue and that job's cost. All Spec's shop sees it in their queue like any other ticket, with DTS listed as the customer.
+
+**Billing it back.** When the shop finishes, **Bill it** on the Group View drafts an intercompany invoice from All Spec to DTS. Both entities end up with the paperwork a separate legal entity actually needs.
+
+**Getting the group number right.** A DTS job carries the fabrication at what it was *charged*, not at All Spec's internal cost — otherwise DTS would look more profitable than it is and the shop's margin would vanish. At group level the intercompany revenue is eliminated, so group revenue is only what outside customers paid. When work has been delivered end to end, group profit equals the two entities added together; the Group View shows that walk line by line.
+
+One thing to know: only intercompany work sitting inside a **completed** job is eliminated. Work still in the shop is on All Spec's books but not yet on DTS's, so netting it early would flatter the group by the margin on unfinished work.
 
 ## The parts that make you money
 
@@ -89,7 +113,7 @@ Everything lives under `data/` — the database, uploaded photos, backups, and t
 npm test
 ```
 
-23 tests over `lib/finance.js` — the module every invoice, job margin and paycheck goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding.
+37 tests over `lib/finance.js` and `lib/scope.js` — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
 
 ## Security notes
 

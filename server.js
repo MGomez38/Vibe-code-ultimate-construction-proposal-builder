@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const db = require('./db');
-const { makeAuth, hashPassword, verifyPassword } = require('./auth');
+const { makeAuth, hashPassword, verifyPassword, parseCookies } = require('./auth');
 const { sendMail, OUTBOX } = require('./mailer');
 const { readUpload, storeFile, removeFile, UPLOAD_DIR } = require('./lib/uploads');
 const backup = require('./lib/backup');
@@ -26,6 +26,7 @@ const T = require('./templates');
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const auth = makeAuth(db);
+const SC = require('./lib/scope')(db);
 const F = require('./lib/finance')(db);
 const { docTotals, invoiceTotals, woFinancials, jobFinancials, changeOrderValue, round2, parseItems } = F;
 
@@ -75,8 +76,27 @@ const settings = () => Object.fromEntries(db.prepare('SELECT key, value FROM set
 const token = () => crypto.randomBytes(18).toString('hex');
 const csvCell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
 
-function nextNumber(table, column, prefix) {
-  const rows = db.prepare(`SELECT ${column} AS n FROM ${table}`).all();
+/**
+ * A company row flattened into the keys the customer-facing templates expect,
+ * merged over system-wide settings. Every document is branded by the entity
+ * that issued it, not by whichever books you happen to be looking at.
+ */
+function companyOf(companyId) {
+  const c = (companyId && SC.byId(companyId)) || SC.all()[0] || {};
+  return {
+    ...settings(), ...c,
+    company_name: c.name || 'Company', company_address: c.address || '',
+    company_phone: c.phone || '', company_email: c.email || '', company_website: c.website || '',
+  };
+}
+
+/** Documents are numbered per entity: DTS-INV-1003, AS-WO-5125. */
+function nextNumber(table, column, kind, companyId) {
+  const co = companyId ? SC.byId(companyId) : null;
+  const prefix = co ? `${co.code}-${kind}` : kind;
+  const rows = companyId
+    ? db.prepare(`SELECT ${column} AS n FROM ${table} WHERE company_id = ?`).all(companyId)
+    : db.prepare(`SELECT ${column} AS n FROM ${table}`).all();
   let max = 0;
   for (const r of rows) { const m = /(\d+)$/.exec(r.n || ''); if (m) max = Math.max(max, parseInt(m[1], 10)); }
   return `${prefix}-${max + 1}`;
@@ -132,7 +152,7 @@ function quoteContext(q, { asSent = false } = {}) {
   const view = asSent ? frozenView(q) : q;
   return {
     quote: view, client: q.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(q.client_id) : null,
-    company: settings(), totals: docTotals(view), items: parseItems(view.items),
+    company: companyOf(q.company_id), totals: docTotals(view), items: parseItems(view.items),
   };
 }
 function coContext(co, { asSent = false } = {}) {
@@ -148,13 +168,13 @@ function invContext(inv) {
   return {
     inv, job: inv.job_id ? db.prepare('SELECT * FROM jobs WHERE id = ?').get(inv.job_id) : null,
     client: inv.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(inv.client_id) : null,
-    company: settings(), totals: invoiceTotals(inv, paidOn(inv.id)), items: parseItems(inv.items), payments,
+    company: companyOf(inv.company_id), totals: invoiceTotals(inv, paidOn(inv.id)), items: parseItems(inv.items), payments,
   };
 }
 
 /** Shared "email a customer document" pipeline used by quotes, COs and invoices. */
-async function deliver({ to, subject, html: body, text: plain, kind, relatedType, relatedId, user }) {
-  const cfg = settings();
+async function deliver({ to, subject, html: body, text: plain, kind, relatedType, relatedId, user, company }) {
+  const cfg = { ...settings(), ...(company || {}) };
   let result, status = 'sent', error = '';
   try {
     result = await sendMail(
@@ -194,13 +214,23 @@ function sanitize(cfg, body) {
   }
   return out;
 }
-function crudHandler(resource, method, id, body) {
+/** Tables that belong to a single legal entity. */
+const SCOPED = new Set(['clients', 'employees', 'materials', 'quotes', 'jobs', 'work_orders',
+  'invoices', 'purchase_orders', 'subcontractors', 'change_orders']);
+
+function crudHandler(resource, method, id, body, scope) {
   const cfg = RESOURCES[resource], t = cfg.table;
-  if (method === 'GET' && !id) return db.prepare(`SELECT * FROM ${t} ORDER BY id DESC`).all();
+  const scoped = SCOPED.has(t);
+  if (method === 'GET' && !id) {
+    if (!scoped) return db.prepare(`SELECT * FROM ${t} ORDER BY id DESC`).all();
+    const w = SC.where(scope);
+    return db.prepare(`SELECT * FROM ${t} WHERE ${w.sql} ORDER BY id DESC`).all(...w.params);
+  }
   if (method === 'GET' && id) return db.prepare(`SELECT * FROM ${t} WHERE id = ?`).get(id) || { error: 'Not found' };
   if (method === 'POST') {
     const data = sanitize(cfg, body), keys = Object.keys(data);
     if (!keys.length) throw new Error('No valid fields');
+    if (scoped) { data.company_id = SC.writeCompanyId(scope, body.company_id); keys.push('company_id'); }
     const info = db.prepare(`INSERT INTO ${t} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...keys.map(k => data[k]));
     return db.prepare(`SELECT * FROM ${t} WHERE id = ?`).get(info.lastInsertRowid);
   }
@@ -347,6 +377,11 @@ async function portalApi(req, res, parts, body, user, url) {
   const section = parts[2];
   const empId = user.employee_id;
   if (!empId) return json(res, 403, { error: 'This login is not linked to an employee record' });
+  // everything the crew sees belongs to the entity that employs them
+  const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(empId) || {};
+  const myCompany = emp.company_id || null;
+  const coFilter = myCompany ? 'AND (company_id = ? OR company_id IS NULL)' : '';
+  const coParams = myCompany ? [myCompany] : [];
 
   const openEntry = () => db.prepare('SELECT * FROM time_entries WHERE employee_id = ? AND clock_out IS NULL').get(empId);
 
@@ -393,7 +428,9 @@ async function portalApi(req, res, parts, body, user, url) {
         FROM work_orders w LEFT JOIN jobs j ON j.id = w.job_id
         WHERE w.assigned_to = ? AND w.status IN ('open','in_progress')
         ORDER BY CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.due_date`).all(empId),
-      jobs: db.prepare(`SELECT id, job_number, title, address FROM jobs WHERE status IN ('planned','in_progress') ORDER BY job_number`).all(),
+      company: myCompany ? (({ id, code, name, kind, accent }) => ({ id, code, name, kind, accent }))(SC.byId(myCompany)) : null,
+      jobs: db.prepare(`SELECT id, job_number, title, address FROM jobs
+        WHERE status IN ('planned','in_progress') ${coFilter} ORDER BY job_number`).all(...coParams),
     });
   }
 
@@ -450,6 +487,7 @@ async function portalApi(req, res, parts, body, user, url) {
         LEFT JOIN jobs j ON j.id = w.job_id LEFT JOIN clients c ON c.id = w.client_id
         LEFT JOIN employees e ON e.id = w.assigned_to WHERE w.id = ?`).get(parts[3]);
       if (!wo) return json(res, 404, { error: 'Work order not found' });
+      if (myCompany && wo.company_id && wo.company_id !== myCompany) return json(res, 403, { error: 'That work order belongs to the other company' });
       return json(res, 200, {
         id: wo.id, wo_number: wo.wo_number, title: wo.title, description: wo.description,
         wo_type: wo.wo_type, priority: wo.priority, status: wo.status, due_date: wo.due_date,
@@ -466,8 +504,8 @@ async function portalApi(req, res, parts, body, user, url) {
     const rows = db.prepare(`SELECT w.id, w.wo_number, w.title, w.wo_type, w.priority, w.status, w.due_date,
         w.assigned_to, j.job_number, e.name AS assigned_name FROM work_orders w
       LEFT JOIN jobs j ON j.id = w.job_id LEFT JOIN employees e ON e.id = w.assigned_to
-      WHERE w.status IN ('open','in_progress')
-      ORDER BY CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.due_date`).all();
+      WHERE w.status IN ('open','in_progress') ${myCompany ? 'AND (w.company_id = ? OR w.company_id IS NULL)' : ''}
+      ORDER BY CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.due_date`).all(...coParams);
     for (const r of rows) {
       r.mine = r.assigned_to === empId;
       r.plan_count = db.prepare(`SELECT COUNT(*) n FROM attachments WHERE entity_type = 'work_order' AND entity_id = ?`).get(r.id).n;
@@ -519,7 +557,8 @@ async function portalApi(req, res, parts, body, user, url) {
   }
 
   if (section === 'materials' && req.method === 'GET') {
-    return json(res, 200, db.prepare('SELECT id, sku, name, category, unit, qty_on_hand, reorder_point, location FROM materials ORDER BY name').all());
+    return json(res, 200, db.prepare(`SELECT id, sku, name, category, unit, qty_on_hand, reorder_point, location
+      FROM materials WHERE 1=1 ${coFilter} ORDER BY name`).all(...coParams));
   }
 
   return json(res, 404, { error: 'Unknown portal endpoint' });
@@ -536,7 +575,8 @@ function safeStamp(at) {
 
 // ---------------------------------------------------------------- estimating intelligence
 /** Every historical priced line item, from quotes, work orders and change orders. */
-function historicalItems() {
+function historicalItems(scope) {
+  const W = SC.where(scope);
   const out = [];
   const push = (src, number, date, status, items) => {
     for (const i of parseItems(items)) {
@@ -545,9 +585,9 @@ function historicalItems() {
         qty: Number(i.qty) || 0, unit: i.unit || '', unit_cost: Number(i.unit_cost) || 0, unit_price: Number(i.unit_price) || 0 });
     }
   };
-  for (const q of db.prepare('SELECT * FROM quotes').all()) push('quote', q.quote_number, q.created_at, q.status, q.items);
-  for (const w of db.prepare('SELECT * FROM work_orders').all()) push('work_order', w.wo_number, w.completed_at || w.created_at, w.status, w.items);
-  for (const c of db.prepare('SELECT * FROM change_orders').all()) push('change_order', c.co_number, c.created_at, c.status, c.items);
+  for (const q of db.prepare(`SELECT * FROM quotes WHERE ${W.sql}`).all(...W.params)) push('quote', q.quote_number, q.created_at, q.status, q.items);
+  for (const w of db.prepare(`SELECT * FROM work_orders WHERE ${W.sql}`).all(...W.params)) push('work_order', w.wo_number, w.completed_at || w.created_at, w.status, w.items);
+  for (const c of db.prepare(`SELECT * FROM change_orders WHERE ${W.sql}`).all(...W.params)) push('change_order', c.co_number, c.created_at, c.status, c.items);
   return out;
 }
 
@@ -556,8 +596,9 @@ function historicalItems() {
  * Only completed jobs count — an in-progress job has hours still to come and
  * would drag the average toward "we always overestimate", which is backwards.
  */
-function laborAccuracy() {
-  const jobs = db.prepare(`SELECT * FROM jobs WHERE est_labor_hours > 0 AND status = 'completed'`).all();
+function laborAccuracy(scope) {
+  const W = SC.where(scope);
+  const jobs = db.prepare(`SELECT * FROM jobs WHERE est_labor_hours > 0 AND status = 'completed' AND ${W.sql}`).all(...W.params);
   const samples = [];
   for (const j of jobs) {
     const f = jobFinancials(j.id);
@@ -569,11 +610,12 @@ function laborAccuracy() {
   return { samples, factor: round2(1 + avg / 100), avg_variance_pct: round2(avg) };
 }
 
-function estimatorSearch(q) {
+function estimatorSearch(q, scope) {
+  const W = SC.where(scope);
   const needle = String(q || '').trim().toLowerCase();
   if (!needle) return [];
   const groups = new Map();
-  for (const i of historicalItems()) {
+  for (const i of historicalItems(scope)) {
     if (!i.desc.toLowerCase().includes(needle)) continue;
     const key = i.desc.toLowerCase();
     if (!groups.has(key)) groups.set(key, { desc: i.desc, unit: i.unit, uses: [], sources: [] });
@@ -582,7 +624,7 @@ function estimatorSearch(q) {
     g.sources.push(`${i.number}`);
   }
   // materials on hand are quotable too
-  for (const m of db.prepare('SELECT * FROM materials WHERE lower(name) LIKE ?').all(`%${needle}%`)) {
+  for (const m of db.prepare(`SELECT * FROM materials WHERE lower(name) LIKE ? AND ${W.sql}`).all(`%${needle}%`, ...W.params)) {
     const key = m.name.toLowerCase();
     if (!groups.has(key)) groups.set(key, { desc: m.name, unit: m.unit, uses: [], sources: [], in_stock: m.qty_on_hand, current_cost: m.unit_cost, current_price: m.sell_price });
     else Object.assign(groups.get(key), { in_stock: m.qty_on_hand, current_cost: m.unit_cost, current_price: m.sell_price });
@@ -606,11 +648,12 @@ function estimatorSearch(q) {
 }
 
 /** Score a draft quote against everything the company has actually done. */
-function benchmark(draft) {
+function benchmark(draft, scope) {
   const totals = docTotals(draft);
-  const cfg = settings();
+  const cfg = companyOf(draft.company_id || scope.activeId);
   const target = Number(cfg.target_margin_pct || 30);
-  const accuracy = laborAccuracy();
+  const accuracy = laborAccuracy(scope);
+  const W = SC.where(scope);
   const warnings = [];
 
   if (totals.total > 0 && totals.est_margin_pct < target) {
@@ -628,7 +671,7 @@ function benchmark(draft) {
   const words = String(draft.title || '').toLowerCase().split(/\W+/).filter(w => w.length > 3);
   const similar = [];
   if (words.length) {
-    for (const j of db.prepare(`SELECT * FROM jobs WHERE status = 'completed'`).all()) {
+    for (const j of db.prepare(`SELECT * FROM jobs WHERE status = 'completed' AND ${W.sql}`).all(...W.params)) {
       const hay = `${j.title} ${j.description}`.toLowerCase();
       const hits = words.filter(w => hay.includes(w)).length;
       if (hits) { const f = jobFinancials(j.id); similar.push({ job_number: j.job_number, title: j.title, score: hits, sold: f.sold_price, cost: f.total_cost, margin_pct: f.margin_pct, hours: f.labor_hours }); }
@@ -644,9 +687,10 @@ function benchmark(draft) {
 }
 
 // ---------------------------------------------------------------- capacity planning
-function capacity(weeks = 4) {
+function capacity(weeks = 4, scope) {
+  const CW = SC.where(scope, 'e');
   const shiftHours = s => (s === 'AM' || s === 'PM') ? 4 : 8;
-  const crew = db.prepare('SELECT * FROM employees WHERE active = 1').all();
+  const crew = db.prepare(`SELECT * FROM employees e WHERE e.active = 1 AND ${CW.sql}`).all(...CW.params);
   const start = new Date(); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
   const out = [];
   for (let w = 0; w < weeks; w++) {
@@ -655,7 +699,7 @@ function capacity(weeks = 4) {
     const f = from.toISOString().slice(0, 10), t = to.toISOString().slice(0, 10);
     const rows = db.prepare(`SELECT s.*, e.name AS employee_name, j.job_number FROM schedule s
       JOIN employees e ON e.id = s.employee_id LEFT JOIN jobs j ON j.id = s.job_id
-      WHERE s.date BETWEEN ? AND ?`).all(f, t);
+      WHERE s.date BETWEEN ? AND ? AND ${CW.sql}`).all(f, t, ...CW.params);
     const committed = rows.reduce((s, r) => s + shiftHours(r.shift), 0);
     const available = crew.length * 8 * 5;
     // double-bookings: same person, same day, more than one full-day assignment
@@ -681,8 +725,11 @@ function capacity(weeks = 4) {
  * unpaid invoices by due date, scheduled crew hours, and purchase orders in transit.
  * Anything already overdue lands in week one — that money is needed now.
  */
-function cashflow(weeks = 13) {
-  const cfg = settings();
+function cashflow(weeks = 13, scope) {
+  const W = SC.where(scope);
+  const openingBalance = scope.companies
+    .filter(c => scope.ids.includes(c.id))
+    .reduce((s, c) => s + (Number(c.cash_on_hand) || 0), 0);
   const shiftHours = s => (s === 'AM' || s === 'PM') ? 4 : 8;
   const start = new Date(); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
   const weekStarts = [...Array(weeks)].map((_, i) => {
@@ -701,7 +748,8 @@ function cashflow(weeks = 13) {
 
   // in: unpaid invoices, by due date
   for (const inv of db.prepare(`SELECT i.*, c.name AS client_name FROM invoices i
-      LEFT JOIN clients c ON c.id = i.client_id WHERE i.status NOT IN ('void','paid')`).all()) {
+      LEFT JOIN clients c ON c.id = i.client_id
+      WHERE i.status NOT IN ('void','paid') AND ${SC.where(scope, 'i').sql}`).all(...W.params)) {
     const t = invoiceTotals(inv, paidOn(inv.id));
     if (t.balance <= 0.005) continue;
     const due = inv.due_date || inv.issue_date || today();
@@ -710,7 +758,7 @@ function cashflow(weeks = 13) {
 
   // out: payroll from the schedule, at each employee's rate
   const sched = db.prepare(`SELECT s.date, s.shift, e.hourly_rate, e.name FROM schedule s
-    JOIN employees e ON e.id = s.employee_id WHERE s.date >= ?`).all(weekStarts[0]);
+    JOIN employees e ON e.id = s.employee_id WHERE s.date >= ? AND ${SC.where(scope, 'e').sql}`).all(weekStarts[0], ...W.params);
   const payrollByWeek = {};
   for (const s of sched) {
     const i = bucketFor(s.date);
@@ -720,13 +768,13 @@ function cashflow(weeks = 13) {
   for (const [i, amount] of Object.entries(payrollByWeek)) addOut(Number(i), amount, 'Payroll (scheduled crew)');
 
   // out: purchase orders in transit, by expected date
-  for (const po of db.prepare(`SELECT * FROM purchase_orders WHERE status = 'ordered'`).all()) {
+  for (const po of db.prepare(`SELECT * FROM purchase_orders WHERE status = 'ordered' AND ${W.sql}`).all(...W.params)) {
     const total = parseItems(po.items).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_cost) || 0), 0);
     if (total <= 0) continue;
     addOut(bucketFor(po.expected_date || today()), total, `${po.po_number} · ${po.vendor}`);
   }
 
-  let balance = Number(cfg.cash_on_hand) || 0;
+  let balance = openingBalance;
   const opening = balance;
   for (const r of rows) {
     r.net = round2(r.inflow - r.outflow);
@@ -740,14 +788,15 @@ function cashflow(weeks = 13) {
     total_in: round2(rows.reduce((s, r) => s + r.inflow, 0)),
     total_out: round2(rows.reduce((s, r) => s + r.outflow, 0)),
     first_shortfall: firstShort ? firstShort.week_start : null,
-    unbilled: round2(db.prepare(`SELECT id FROM jobs WHERE status IN ('planned','in_progress','on_hold')`).all()
+    unbilled: round2(db.prepare(`SELECT id FROM jobs WHERE status IN ('planned','in_progress','on_hold') AND ${W.sql}`).all(...W.params)
       .reduce((s, j) => { const f = jobFinancials(j.id); return s + Math.max(0, f.sold_price - f.invoicing.billed); }, 0)),
   };
 }
 
 // ---------------------------------------------------------------- payroll
-function payrollPeriod(from, to) {
-  const employees = db.prepare('SELECT * FROM employees WHERE active = 1 ORDER BY name').all();
+function payrollPeriod(from, to, scope) {
+  const PW = SC.where(scope, 'e');
+  const employees = db.prepare(`SELECT * FROM employees e WHERE e.active = 1 AND ${PW.sql} ORDER BY e.name`).all(...PW.params);
   return employees.map(e => {
     const entries = db.prepare(`SELECT t.*, j.job_number, j.title AS job_title, j.prevailing_wage FROM time_entries t
       LEFT JOIN jobs j ON j.id = t.job_id
@@ -821,7 +870,8 @@ function certifiedPayroll(jobId, weekEnding) {
 }
 
 // ---------------------------------------------------------------- admin API
-async function adminApi(req, res, parts, body, query, user, url) {
+async function adminApi(req, res, parts, body, query, user, url, scope) {
+  const SW = SC.where(scope);
   const method = req.method;
   const resource = parts[1];
   const idOrAction = parts[2];
@@ -856,7 +906,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const from = query.get('from') || today(), to = query.get('to') || today();
     const rows = db.prepare(`SELECT t.*, e.name AS employee_name, e.hourly_rate, j.job_number, j.title AS job_title
       FROM time_entries t JOIN employees e ON e.id = t.employee_id
-      LEFT JOIN jobs j ON j.id = t.job_id WHERE date(t.clock_in) BETWEEN ? AND ? ORDER BY t.clock_in DESC`).all(from, to);
+      LEFT JOIN jobs j ON j.id = t.job_id WHERE date(t.clock_in) BETWEEN ? AND ?
+      AND ${SC.where(scope, 'e').sql} ORDER BY t.clock_in DESC`).all(from, to, ...SW.params);
     for (const r of rows) {
       r.hours = r.clock_out ? round2(F.hoursOf(r)) : null;
       r.labor_cost = r.hours !== null ? round2(r.hours * r.hourly_rate) : null;
@@ -867,30 +918,30 @@ async function adminApi(req, res, parts, body, query, user, url) {
 
   // ---- quotes ----
   if (resource === 'quotes' && idOrAction === 'estimator' && method === 'GET') {
-    return json(res, 200, { matches: estimatorSearch(query.get('q')), accuracy: laborAccuracy() });
+    return json(res, 200, { matches: estimatorSearch(query.get('q'), scope), accuracy: laborAccuracy(scope) });
   }
   if (resource === 'quotes' && idOrAction === 'benchmark' && method === 'POST') {
-    return json(res, 200, benchmark(body));
+    return json(res, 200, benchmark(body, scope));
   }
   if (resource === 'quotes' && idOrAction && action === 'convert' && method === 'POST') {
     const q = db.prepare('SELECT * FROM quotes WHERE id = ?').get(idOrAction);
     if (!q) return json(res, 404, { error: 'Quote not found' });
     const totals = docTotals(q);
-    const jobNumber = nextNumber('jobs', 'job_number', 'J');
-    const jobId = db.prepare(`INSERT INTO jobs (job_number, client_id, quote_id, title, description, status, sold_price, start_date, est_labor_hours)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(jobNumber, q.client_id, q.id, q.title, q.description, 'planned', totals.total, body.start_date || today(), q.labor_hours).lastInsertRowid;
+    const jobNumber = nextNumber('jobs', 'job_number', 'J', q.company_id);
+    const jobId = db.prepare(`INSERT INTO jobs (company_id, job_number, client_id, quote_id, title, description, status, sold_price, start_date, est_labor_hours)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(q.company_id, jobNumber, q.client_id, q.id, q.title, q.description, 'planned', totals.total, body.start_date || today(), q.labor_hours).lastInsertRowid;
     let woId = null;
     if (body.create_work_order) {
-      const woNumber = nextNumber('work_orders', 'wo_number', 'WO');
-      woId = db.prepare(`INSERT INTO work_orders (wo_number, job_id, client_id, title, description, wo_type, status, items, labor_hours, labor_rate, sold_price)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(woNumber, jobId, q.client_id, q.title, q.description, 'Shop', 'open', q.items, q.labor_hours, q.labor_rate, totals.total).lastInsertRowid;
+      const woNumber = nextNumber('work_orders', 'wo_number', 'WO', q.company_id);
+      woId = db.prepare(`INSERT INTO work_orders (company_id, wo_number, job_id, client_id, title, description, wo_type, status, items, labor_hours, labor_rate, sold_price)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(q.company_id, woNumber, jobId, q.client_id, q.title, q.description, 'Shop', 'open', q.items, q.labor_hours, q.labor_rate, totals.total).lastInsertRowid;
     }
     let invId = null;
     if (body.deposit_pct > 0) {
-      const invNumber = nextNumber('invoices', 'invoice_number', 'INV');
+      const invNumber = nextNumber('invoices', 'invoice_number', 'INV', q.company_id);
       const amount = round2(totals.total * Number(body.deposit_pct) / 100);
-      invId = db.prepare(`INSERT INTO invoices (invoice_number, job_id, client_id, invoice_type, description, items, status, issue_date, due_date, terms_days)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(invNumber, jobId, q.client_id, 'deposit', `Contract deposit — ${body.deposit_pct}% at signing`,
+      invId = db.prepare(`INSERT INTO invoices (company_id, invoice_number, job_id, client_id, invoice_type, description, items, status, issue_date, due_date, terms_days)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(q.company_id, invNumber, jobId, q.client_id, 'deposit', `Contract deposit — ${body.deposit_pct}% at signing`,
         JSON.stringify([{ desc: `Deposit, ${body.deposit_pct}% of contract`, qty: 1, unit: 'ls', unit_price: amount }]), 'draft', today(), today(), 0).lastInsertRowid;
     }
     db.prepare(`UPDATE quotes SET status = 'accepted', updated_at = ? WHERE id = ?`).run(now(), q.id);
@@ -907,14 +958,14 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const client = q.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(q.client_id) : null;
     const to = String(body.to || client?.email || '').trim();
     if (!validEmail(to)) return json(res, 400, { error: 'A valid recipient email address is required' });
-    const cfg = settings();
+    const cfg = companyOf(q.company_id);
     freezeForSend('quotes', q);
     const ctx = quoteContext(q, { asSent: true });
     const subject = body.subject || `${cfg.company_name} — Proposal ${q.quote_number}: ${q.title}`;
     const message = body.message !== undefined ? body.message
       : `Hi${client?.contact ? ' ' + client.contact.split(' ')[0] : ''},\n\nThanks for the opportunity to quote this work. Our proposal is below.\n\n${cfg.company_name}`;
     const r = await deliver({ to, subject, html: T.quoteEmail(ctx, { link, message }), text: T.quoteText(ctx, link),
-      kind: 'quote', relatedType: 'quote', relatedId: q.id, user });
+      kind: 'quote', relatedType: 'quote', relatedId: q.id, user, company: cfg });
     if (r.status === 'failed') return json(res, 502, { error: `Email failed: ${r.error}`, link });
     if (q.status === 'draft') db.prepare(`UPDATE quotes SET status = 'sent' WHERE id = ?`).run(q.id);
     db.prepare('UPDATE quotes SET sent_at = ? WHERE id = ?').run(now(), q.id);
@@ -924,7 +975,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
   }
   if (resource === 'quotes' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT q.*, c.name AS client_name, c.email AS client_email, c.contact AS client_contact
-      FROM quotes q LEFT JOIN clients c ON c.id = q.client_id ORDER BY q.id DESC`).all();
+      FROM quotes q LEFT JOIN clients c ON c.id = q.client_id
+      WHERE ${SC.where(scope, 'q').sql} ORDER BY q.id DESC`).all(...SW.params);
     rows.forEach(r => { r.totals = docTotals(r); r.has_drift = hasDrift(r); });
     return json(res, 200, rows);
   }
@@ -932,7 +984,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
   // ---- change orders ----
   if (resource === 'changeorders' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT co.*, j.job_number, j.title AS job_title, c.name AS client_name, c.email AS client_email, c.contact AS client_contact
-      FROM change_orders co LEFT JOIN jobs j ON j.id = co.job_id LEFT JOIN clients c ON c.id = co.client_id ORDER BY co.id DESC`).all();
+      FROM change_orders co LEFT JOIN jobs j ON j.id = co.job_id LEFT JOIN clients c ON c.id = co.client_id
+      WHERE ${SC.where(scope, 'co').sql} ORDER BY co.id DESC`).all(...SW.params);
     rows.forEach(r => { r.totals = docTotals(r); r.has_drift = hasDrift(r); });
     return json(res, 200, rows);
   }
@@ -946,14 +999,14 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const client = co.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(co.client_id) : null;
     const to = String(body.to || client?.email || '').trim();
     if (!validEmail(to)) return json(res, 400, { error: 'A valid recipient email address is required' });
-    const cfg = settings();
+    const cfg = companyOf(co.company_id);
     freezeForSend('change_orders', co);
     const ctx = coContext(co, { asSent: true });
     const subject = body.subject || `${cfg.company_name} — Change Order ${co.co_number}: ${co.title}`;
     const message = body.message !== undefined ? body.message
       : `Hi${client?.contact ? ' ' + client.contact.split(' ')[0] : ''},\n\nWe ran into work outside the original scope and need your approval before proceeding. Details are below.\n\n${cfg.company_name}`;
     const r = await deliver({ to, subject, html: T.changeOrderEmail(ctx, { link, message }), text: T.docText('Change Order', ctx, link),
-      kind: 'change_order', relatedType: 'change_order', relatedId: co.id, user });
+      kind: 'change_order', relatedType: 'change_order', relatedId: co.id, user, company: cfg });
     if (r.status === 'failed') return json(res, 502, { error: `Email failed: ${r.error}`, link });
     db.prepare(`UPDATE change_orders SET status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END, sent_at = ? WHERE id = ?`).run(now(), co.id);
     auth.audit(user, 'change_order_emailed', `${co.co_number} → ${to} (${r.status})`);
@@ -964,7 +1017,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
   // ---- invoices ----
   if (resource === 'invoices' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT i.*, j.job_number, j.title AS job_title, c.name AS client_name, c.email AS client_email, c.contact AS client_contact
-      FROM invoices i LEFT JOIN jobs j ON j.id = i.job_id LEFT JOIN clients c ON c.id = i.client_id ORDER BY i.id DESC`).all();
+      FROM invoices i LEFT JOIN jobs j ON j.id = i.job_id LEFT JOIN clients c ON c.id = i.client_id
+      WHERE ${SC.where(scope, 'i').sql} ORDER BY i.id DESC`).all(...SW.params);
     rows.forEach(r => {
       r.totals = invoiceTotals(r, paidOn(r.id));
       r.days_overdue = (r.due_date && r.totals.balance > 0 && r.due_date < today())
@@ -976,7 +1030,7 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const buckets = { current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
     const open = [];
     for (const inv of db.prepare(`SELECT i.*, c.name AS client_name FROM invoices i LEFT JOIN clients c ON c.id = i.client_id
-        WHERE i.status NOT IN ('void','draft')`).all()) {
+        WHERE i.status NOT IN ('void','draft') AND ${SC.where(scope, 'i').sql}`).all(...SW.params)) {
       const t = invoiceTotals(inv, paidOn(inv.id));
       if (t.balance <= 0.005) continue;
       const days = inv.due_date && inv.due_date < today() ? Math.floor((new Date(today()) - new Date(inv.due_date)) / 864e5) : 0;
@@ -986,7 +1040,7 @@ async function adminApi(req, res, parts, body, query, user, url) {
         days_overdue: days, balance: t.balance, total: t.total, bucket: key });
     }
     open.sort((a, b) => b.days_overdue - a.days_overdue || b.balance - a.balance);
-    const retained = round2(db.prepare(`SELECT * FROM invoices WHERE status != 'void'`).all()
+    const retained = round2(db.prepare(`SELECT * FROM invoices WHERE status != 'void' AND ${SW.sql}`).all(...SW.params)
       .reduce((s, i) => s + invoiceTotals(i, 0).retainage, 0));
     return json(res, 200, { buckets, open, total_outstanding: round2(Object.values(buckets).reduce((a, b) => a + b, 0)), retainage_held: retained });
   }
@@ -996,15 +1050,15 @@ async function adminApi(req, res, parts, body, query, user, url) {
     if (!job) return json(res, 404, { error: 'Job not found' });
     const fin = jobFinancials(job.id);
     const pct = Math.max(0, Math.min(100, Number(body.percent_complete) || 0));
-    const cfg = settings();
+    const cfg = companyOf(job.company_id);
     const gross = round2(fin.sold_price * pct / 100);
     const already = fin.invoicing.billed;
     const thisBill = round2(Math.max(0, gross - already));
     if (thisBill <= 0) return json(res, 409, { error: `Already billed ${T.money(already)} of ${T.money(fin.sold_price)} — nothing new to bill at ${pct}%` });
-    const invNumber = nextNumber('invoices', 'invoice_number', 'INV');
+    const invNumber = nextNumber('invoices', 'invoice_number', 'INV', job.company_id);
     const termsDays = Number(body.terms_days ?? cfg.payment_terms_days ?? 30);
-    const id = db.prepare(`INSERT INTO invoices (invoice_number, job_id, client_id, invoice_type, description, items, tax_pct, retainage_pct, status, issue_date, due_date, terms_days)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(invNumber, job.id, job.client_id, body.invoice_type || 'progress',
+    const id = db.prepare(`INSERT INTO invoices (company_id, invoice_number, job_id, client_id, invoice_type, description, items, tax_pct, retainage_pct, status, issue_date, due_date, terms_days)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(job.company_id, invNumber, job.id, job.client_id, body.invoice_type || 'progress',
       body.description || `Progress billing — ${pct}% complete`,
       JSON.stringify([{ desc: `Work completed to date (${pct}% of contract), less previous billings`, qty: 1, unit: 'ls', unit_price: thisBill }]),
       Number(body.tax_pct) || 0, body.retainage_pct !== undefined ? Number(body.retainage_pct) : Number(cfg.default_retainage_pct || 0),
@@ -1022,13 +1076,13 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const client = inv.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(inv.client_id) : null;
     const to = String(body.to || client?.email || '').trim();
     if (!validEmail(to)) return json(res, 400, { error: 'A valid recipient email address is required' });
-    const cfg = settings();
+    const cfg = companyOf(inv.company_id);
     const ctx = invContext(inv);
     const subject = body.subject || `${cfg.company_name} — Invoice ${inv.invoice_number}`;
     const message = body.message !== undefined ? body.message
       : `Hi${client?.contact ? ' ' + client.contact.split(' ')[0] : ''},\n\nInvoice ${inv.invoice_number} is attached below, due ${inv.due_date || 'on receipt'}. Thank you for your business.\n\n${cfg.company_name}`;
     const r = await deliver({ to, subject, html: T.invoiceEmail(ctx, { link, message }), text: T.docText('Invoice', ctx, link),
-      kind: 'invoice', relatedType: 'invoice', relatedId: inv.id, user });
+      kind: 'invoice', relatedType: 'invoice', relatedId: inv.id, user, company: cfg });
     if (r.status === 'failed') return json(res, 502, { error: `Email failed: ${r.error}`, link });
     db.prepare(`UPDATE invoices SET status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END, sent_at = ? WHERE id = ?`).run(now(), inv.id);
     auth.audit(user, 'invoice_emailed', `${inv.invoice_number} → ${to} (${r.status})`);
@@ -1064,7 +1118,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
   if (resource === 'jobs' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT j.*, c.name AS client_name, e.name AS foreman_name FROM jobs j
       LEFT JOIN clients c ON c.id = j.client_id LEFT JOIN employees e ON e.id = j.foreman_id
-      ORDER BY CASE j.status WHEN 'in_progress' THEN 0 WHEN 'planned' THEN 1 WHEN 'on_hold' THEN 2 ELSE 3 END, j.id DESC`).all();
+      WHERE ${SC.where(scope, 'j').sql}
+      ORDER BY CASE j.status WHEN 'in_progress' THEN 0 WHEN 'planned' THEN 1 WHEN 'on_hold' THEN 2 ELSE 3 END, j.id DESC`).all(...SW.params);
     rows.forEach(r => { r.financials = jobFinancials(r.id); });
     return json(res, 200, rows);
   }
@@ -1110,8 +1165,9 @@ async function adminApi(req, res, parts, body, query, user, url) {
   if (resource === 'workorders' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT w.*, c.name AS client_name, e.name AS assigned_name, j.job_number FROM work_orders w
       LEFT JOIN clients c ON c.id = w.client_id LEFT JOIN employees e ON e.id = w.assigned_to LEFT JOIN jobs j ON j.id = w.job_id
+      WHERE ${SC.where(scope, 'w').sql}
       ORDER BY CASE w.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END,
-               CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.id DESC`).all();
+               CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.id DESC`).all(...SW.params);
     rows.forEach(r => { r.financials = woFinancials(r); r.attachments = attachmentsFor('work_order', r.id); });
     return json(res, 200, rows);
   }
@@ -1119,7 +1175,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
   // ---- job cards ----
   if (resource === 'jobcards' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT c.*, e.name AS employee_name, j.job_number, j.title AS job_title, j.client_id FROM job_cards c
-      JOIN employees e ON e.id = c.employee_id LEFT JOIN jobs j ON j.id = c.job_id ORDER BY c.status = 'approved', c.id DESC`).all();
+      JOIN employees e ON e.id = c.employee_id LEFT JOIN jobs j ON j.id = c.job_id
+      WHERE ${SC.where(scope, 'e').sql} ORDER BY c.status = 'approved', c.id DESC`).all(...SW.params);
     rows.forEach(c => { c.photos = attachmentsFor('job_card', c.id); });
     return json(res, 200, rows);
   }
@@ -1173,7 +1230,7 @@ async function adminApi(req, res, parts, body, query, user, url) {
 
   // ---- subcontractors ----
   if (resource === 'subcontractors' && method === 'GET' && !idOrAction) {
-    const rows = db.prepare('SELECT * FROM subcontractors ORDER BY name').all();
+    const rows = db.prepare(`SELECT * FROM subcontractors WHERE ${SW.sql} ORDER BY name`).all(...SW.params);
     for (const s of rows) {
       s.documents = db.prepare('SELECT * FROM sub_documents WHERE sub_id = ? ORDER BY expires_on').all(s.id);
       const coi = s.documents.filter(d => d.doc_type === 'COI' && d.expires_on);
@@ -1186,21 +1243,111 @@ async function adminApi(req, res, parts, body, query, user, url) {
     return json(res, 200, rows);
   }
 
+  // ---- companies & intercompany ----
+  if (resource === 'companies') {
+    if (method === 'GET' && !idOrAction) {
+      const rows = SC.all().map(c => ({ ...c, ...F.companyPnl(c.id) }));
+      return json(res, 200, rows);
+    }
+    if (method === 'PUT' && idOrAction) {
+      if (!scope.ids.includes(Number(idOrAction))) return json(res, 403, { error: 'Not your company' });
+      const fields = ['name', 'legal_name', 'tagline', 'address', 'phone', 'email', 'website', 'license_number',
+        'accent', 'default_labor_rate', 'target_margin_pct', 'default_tax_pct', 'default_retainage_pct',
+        'payment_terms_days', 'quote_terms', 'payment_link_url', 'payment_instructions', 'mail_from', 'cash_on_hand'];
+      const data = {};
+      for (const f of fields) if (body[f] !== undefined) data[f] = body[f];
+      const keys = Object.keys(data);
+      if (!keys.length) return json(res, 400, { error: 'Nothing to update' });
+      db.prepare(`UPDATE companies SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map(k => data[k]), idOrAction);
+      auth.audit(user, 'company_updated', `${SC.byId(idOrAction)?.code}: ${keys.join(', ')}`);
+      return json(res, 200, { ok: true });
+    }
+  }
+
+  if (resource === 'group' && method === 'GET') {
+    const summary = F.groupSummary();
+    // every open piece of work flowing between the entities
+    summary.flows = db.prepare(`
+      SELECT w.id, w.wo_number, w.title, w.status, w.sold_price, w.company_id, w.origin_company_id,
+             w.origin_job_id, w.billed_invoice_id, j.job_number AS origin_job_number, j.title AS origin_job_title
+      FROM work_orders w LEFT JOIN jobs j ON j.id = w.origin_job_id
+      WHERE w.origin_job_id IS NOT NULL ORDER BY w.id DESC`).all().map(f => ({
+        ...f,
+        charged: woFinancials(f).sold_price,
+        builder: SC.byId(f.company_id)?.code, buyer: SC.byId(f.origin_company_id)?.code,
+        billed: !!f.billed_invoice_id,
+      }));
+    summary.unbilled_intercompany = round2(summary.flows.filter(f => !f.billed && f.status !== 'open')
+      .reduce((s, f) => s + f.charged, 0));
+    return json(res, 200, summary);
+  }
+
+  /** DTS raises fabrication to All Spec against one of its jobs. */
+  if (resource === 'jobs' && idOrAction && action === 'fabricate' && method === 'POST') {
+    const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(idOrAction);
+    if (!job) return json(res, 404, { error: 'Job not found' });
+    const builder = SC.byId(body.builder_company_id);
+    if (!builder) return json(res, 400, { error: 'Pick the company that will build it' });
+    if (builder.id === job.company_id) return json(res, 400, { error: 'That is the same company that owns the job — raise a normal work order instead' });
+    if (!body.title) return json(res, 400, { error: 'Give the fabrication a title' });
+
+    const woNumber = nextNumber('work_orders', 'wo_number', 'WO', builder.id);
+    const items = Array.isArray(body.items) ? body.items : [];
+    const id = db.prepare(`INSERT INTO work_orders
+      (company_id, wo_number, client_id, title, description, wo_type, priority, status, due_date, items,
+       labor_hours, labor_rate, sold_price, origin_job_id, origin_company_id, notes)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      builder.id, woNumber, builder.sister_client_id || null, body.title, body.description || '',
+      body.wo_type || 'Fabrication', body.priority || 'normal', 'open', body.due_date || '',
+      JSON.stringify(items), Number(body.labor_hours) || 0, Number(body.labor_rate) || builder.default_labor_rate,
+      Number(body.sold_price) || 0, job.id, job.company_id,
+      `Raised by ${SC.byId(job.company_id)?.code} against ${job.job_number}`).lastInsertRowid;
+    auth.audit(user, 'intercompany_raised', `${woNumber} to ${builder.code} for ${job.job_number} at ${T.money(Number(body.sold_price) || 0)}`);
+    return json(res, 200, { ok: true, id, wo_number: woNumber, builder: builder.code,
+      message: `${woNumber} raised to ${builder.name}. It will cost ${job.job_number} ${T.money(Number(body.sold_price) || 0)}.` });
+  }
+
+  /** All Spec bills DTS for completed fabrication. */
+  if (resource === 'workorders' && idOrAction && action === 'bill' && method === 'POST') {
+    const wo = db.prepare('SELECT * FROM work_orders WHERE id = ?').get(idOrAction);
+    if (!wo) return json(res, 404, { error: 'Work order not found' });
+    if (!wo.origin_company_id) return json(res, 400, { error: 'That is not intercompany work' });
+    if (wo.billed_invoice_id) return json(res, 409, { error: 'Already billed' });
+    const builder = SC.byId(wo.company_id);
+    const amount = round2(woFinancials(wo).sold_price);
+    if (!(amount > 0)) return json(res, 400, { error: 'Set a price on the work order before billing it' });
+
+    const invNumber = nextNumber('invoices', 'invoice_number', 'INV', builder.id);
+    const terms = Number(builder.payment_terms_days) || 30;
+    const invId = db.prepare(`INSERT INTO invoices
+      (company_id, invoice_number, client_id, invoice_type, description, items, tax_pct, retainage_pct,
+       status, issue_date, due_date, terms_days, intercompany)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      builder.id, invNumber, builder.sister_client_id, 'final',
+      `Fabrication — ${wo.title} (${wo.wo_number})`,
+      JSON.stringify([{ desc: `${wo.title} — fabricated per ${wo.wo_number}`, qty: 1, unit: 'ls', unit_price: amount }]),
+      0, 0, 'draft', today(), addDays(today(), terms), terms, 1).lastInsertRowid;
+    db.prepare('UPDATE work_orders SET billed_invoice_id = ? WHERE id = ?').run(invId, wo.id);
+    auth.audit(user, 'intercompany_billed', `${wo.wo_number} → ${invNumber} ${T.money(amount)}`);
+    return json(res, 200, { ok: true, invoice_id: invId, invoice_number: invNumber, amount,
+      message: `${invNumber} drafted to ${SC.byId(wo.origin_company_id)?.name} for ${T.money(amount)}` });
+  }
+
   // ---- capacity ----
   if (resource === 'capacity' && method === 'GET') {
-    return json(res, 200, capacity(Number(query.get('weeks')) || 4));
+    return json(res, 200, capacity(Number(query.get('weeks')) || 4, scope));
   }
 
   // ---- cash flow ----
   if (resource === 'cashflow' && method === 'GET') {
-    return json(res, 200, cashflow(Math.min(26, Number(query.get('weeks')) || 13)));
+    return json(res, 200, cashflow(Math.min(26, Number(query.get('weeks')) || 13), scope));
   }
 
   // ---- payroll ----
   if (resource === 'payroll' && method === 'GET' && !idOrAction) {
     const from = query.get('from') || addDays(today(), -13);
     const to = query.get('to') || today();
-    const rows = payrollPeriod(from, to);
+    const rows = payrollPeriod(from, to, scope);
     if (query.get('format') === 'csv') {
       const lines = [['Employee', 'Classification', 'Rate', 'Regular hrs', 'OT hrs', 'Total hrs', 'Gross pay'].map(csvCell).join(',')];
       rows.forEach(r => lines.push([r.name, r.classification, r.rate, r.regular_hours, r.ot_hours, r.total_hours, r.gross_pay].map(csvCell).join(',')));
@@ -1224,53 +1371,57 @@ async function adminApi(req, res, parts, body, query, user, url) {
 
   // ---- dashboard ----
   if (resource === 'dashboard' && method === 'GET') {
-    const one = sql => db.prepare(sql).get().n;
+    const one = sql => sql.includes('@SCOPE')
+      ? db.prepare(sql.replace('@SCOPE', SW.sql)).get(...SW.params).n
+      : db.prepare(sql).get().n;
     const aging = { outstanding: 0, overdue: 0 };
-    for (const inv of db.prepare(`SELECT * FROM invoices WHERE status NOT IN ('void','draft')`).all()) {
+    for (const inv of db.prepare(`SELECT * FROM invoices WHERE status NOT IN ('void','draft') AND ${SW.sql}`).all(...SW.params)) {
       const t = invoiceTotals(inv, paidOn(inv.id));
       if (t.balance <= 0.005) continue;
       aging.outstanding = round2(aging.outstanding + t.balance);
       if (inv.due_date && inv.due_date < today()) aging.overdue = round2(aging.overdue + t.balance);
     }
     const kpis = {
-      activeJobs: one(`SELECT COUNT(*) n FROM jobs WHERE status IN ('planned','in_progress','on_hold')`),
-      openWOs: one(`SELECT COUNT(*) n FROM work_orders WHERE status IN ('open','in_progress')`),
-      rushWOs: one(`SELECT COUNT(*) n FROM work_orders WHERE status IN ('open','in_progress') AND priority = 'rush'`),
+      activeJobs: one(`SELECT COUNT(*) n FROM jobs WHERE status IN ('planned','in_progress','on_hold') AND @SCOPE`),
+      openWOs: one(`SELECT COUNT(*) n FROM work_orders WHERE status IN ('open','in_progress') AND @SCOPE`),
+      rushWOs: one(`SELECT COUNT(*) n FROM work_orders WHERE status IN ('open','in_progress') AND priority = 'rush' AND @SCOPE`),
       onClock: one(`SELECT COUNT(*) n FROM time_entries WHERE clock_out IS NULL`),
-      pendingQuotes: one(`SELECT COUNT(*) n FROM quotes WHERE status IN ('draft','sent')`),
-      lowStock: one(`SELECT COUNT(*) n FROM materials WHERE qty_on_hand <= reorder_point`),
-      openPOs: one(`SELECT COUNT(*) n FROM purchase_orders WHERE status = 'ordered'`),
+      pendingQuotes: one(`SELECT COUNT(*) n FROM quotes WHERE status IN ('draft','sent') AND @SCOPE`),
+      lowStock: one(`SELECT COUNT(*) n FROM materials WHERE qty_on_hand <= reorder_point AND @SCOPE`),
+      openPOs: one(`SELECT COUNT(*) n FROM purchase_orders WHERE status = 'ordered' AND @SCOPE`),
       pendingCards: one(`SELECT COUNT(*) n FROM job_cards WHERE status = 'submitted'`),
-      pendingCOs: one(`SELECT COUNT(*) n FROM change_orders WHERE status = 'sent'`),
-      quoteValue: round2(db.prepare(`SELECT * FROM quotes WHERE status IN ('draft','sent')`).all().reduce((s, q) => s + docTotals(q).total, 0)),
+      pendingCOs: one(`SELECT COUNT(*) n FROM change_orders WHERE status = 'sent' AND @SCOPE`),
+      quoteValue: round2(db.prepare(`SELECT * FROM quotes WHERE status IN ('draft','sent') AND ${SW.sql}`).all(...SW.params).reduce((s, q) => s + docTotals(q).total, 0)),
       arOutstanding: aging.outstanding, arOverdue: aging.overdue,
     };
     const months = [];
     for (let i = 5; i >= 0; i--) { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i); months.push(d.toISOString().slice(0, 7)); }
     const series = months.map(m => ({ month: m, revenue: 0, profit: 0 }));
-    for (const j of db.prepare(`SELECT * FROM jobs WHERE status = 'completed' AND completed_at IS NOT NULL`).all()) {
+    for (const j of db.prepare(`SELECT * FROM jobs WHERE status = 'completed' AND completed_at IS NOT NULL AND ${SW.sql}`).all(...SW.params)) {
       const slot = series.find(s => s.month === j.completed_at.slice(0, 7));
       if (slot) { const f = jobFinancials(j.id); slot.revenue += f.sold_price; slot.profit += f.profit; }
     }
-    for (const w of db.prepare(`SELECT * FROM work_orders WHERE job_id IS NULL AND completed_at IS NOT NULL`).all()) {
+    for (const w of db.prepare(`SELECT * FROM work_orders WHERE job_id IS NULL AND completed_at IS NOT NULL AND ${SW.sql}`).all(...SW.params)) {
       const slot = series.find(s => s.month === w.completed_at.slice(0, 7));
       if (slot) { const f = woFinancials(w); slot.revenue += f.sold_price; slot.profit += f.profit; }
     }
     series.forEach(s => { s.revenue = round2(s.revenue); s.profit = round2(s.profit); });
-    const wip = db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id WHERE j.status = 'in_progress'`).all();
+    const wip = db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id
+      WHERE j.status = 'in_progress' AND ${SC.where(scope, 'j').sql}`).all(...SW.params);
     wip.forEach(r => { r.financials = jobFinancials(r.id); });
     return json(res, 200, {
       kpis, series, wip,
       todaySchedule: db.prepare(`SELECT s.*, e.name AS employee_name, j.job_number, j.title AS job_title FROM schedule s
-        JOIN employees e ON e.id = s.employee_id LEFT JOIN jobs j ON j.id = s.job_id WHERE s.date = ? ORDER BY e.name`).all(today()),
-      capacity: capacity(3),
+        JOIN employees e ON e.id = s.employee_id LEFT JOIN jobs j ON j.id = s.job_id
+        WHERE s.date = ? AND ${SC.where(scope, 'e').sql} ORDER BY e.name`).all(today(), ...SW.params),
+      capacity: capacity(3, scope),
     });
   }
 
   // ---- reports ----
   if (resource === 'reports' && method === 'GET') {
-    const byClient = db.prepare(`SELECT c.id, c.name, COUNT(j.id) jobs FROM clients c
-      LEFT JOIN jobs j ON j.client_id = c.id GROUP BY c.id`).all();
+    const byClient = db.prepare(`SELECT c.id, c.name, c.is_internal, COUNT(j.id) jobs FROM clients c
+      LEFT JOIN jobs j ON j.client_id = c.id WHERE ${SC.where(scope, 'c').sql} GROUP BY c.id`).all(...SW.params);
     byClient.forEach(c => {
       const jobs = db.prepare('SELECT id FROM jobs WHERE client_id = ?').all(c.id);
       const fins = jobs.map(j => jobFinancials(j.id));
@@ -1279,16 +1430,17 @@ async function adminApi(req, res, parts, body, query, user, url) {
       c.margin_pct = c.revenue > 0 ? round2(c.profit / c.revenue * 100) : 0;
     });
     byClient.sort((a, b) => b.revenue - a.revenue);
-    const jobs = db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id ORDER BY j.id DESC`).all()
+    const jobs = db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id
+      WHERE ${SC.where(scope, 'j').sql} ORDER BY j.id DESC`).all(...SW.params)
       .map(j => ({ job_number: j.job_number, title: j.title, client: j.client_name, status: j.status, ...jobFinancials(j.id) }));
-    const labor = db.prepare(`SELECT * FROM employees WHERE active = 1`).all().map(e => {
+    const labor = db.prepare(`SELECT * FROM employees WHERE active = 1 AND ${SW.sql}`).all(...SW.params).map(e => {
       const entries = db.prepare(`SELECT * FROM time_entries WHERE employee_id = ? AND clock_out IS NOT NULL AND clock_in >= datetime('now','-30 days')`).all(e.id);
       const hours = entries.reduce((s, t) => s + F.hoursOf(t), 0);
       const billable = entries.filter(t => t.job_id).reduce((s, t) => s + F.hoursOf(t), 0);
       return { name: e.name, role: e.role, hours: round2(hours), billable_hours: round2(billable),
         utilization: hours > 0 ? round2(billable / hours * 100) : 0, cost: round2(hours * e.hourly_rate) };
     }).sort((a, b) => b.hours - a.hours);
-    const quotes = db.prepare('SELECT status FROM quotes').all();
+    const quotes = db.prepare(`SELECT status FROM quotes WHERE ${SW.sql}`).all(...SW.params);
     const decided = quotes.filter(q => q.status === 'accepted' || q.status === 'declined');
     return json(res, 200, {
       byClient, jobs, labor,
@@ -1297,8 +1449,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
         GROUP BY COALESCE(m.id, jm.description) ORDER BY spend DESC LIMIT 10`).all(),
       winRate: decided.length ? round2(decided.filter(q => q.status === 'accepted').length / decided.length * 100) : null,
       quoteCounts: ['draft', 'sent', 'accepted', 'declined'].map(s => ({ status: s, n: quotes.filter(q => q.status === s).length })),
-      accuracy: laborAccuracy(),
-      changeOrders: db.prepare(`SELECT * FROM change_orders`).all().reduce((acc, co) => {
+      accuracy: laborAccuracy(scope),
+      changeOrders: db.prepare(`SELECT * FROM change_orders WHERE ${SW.sql}`).all(...SW.params).reduce((acc, co) => {
         const t = docTotals(co).total;
         acc.count++; acc[co.status] = round2((acc[co.status] || 0) + t);
         return acc;
@@ -1313,27 +1465,33 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const results = [];
     const wos = q
       ? db.prepare(`SELECT w.*, c.name AS client_name FROM work_orders w LEFT JOIN clients c ON c.id = w.client_id
-          WHERE lower(w.title || ' ' || w.description || ' ' || w.wo_number || ' ' || w.items || ' ' || COALESCE(c.name,'')) LIKE ? ORDER BY w.id DESC`).all(like)
-      : db.prepare(`SELECT w.*, c.name AS client_name FROM work_orders w LEFT JOIN clients c ON c.id = w.client_id ORDER BY w.id DESC`).all();
+          WHERE lower(w.title || ' ' || w.description || ' ' || w.wo_number || ' ' || w.items || ' ' || COALESCE(c.name,'')) LIKE ?
+          AND ${SC.where(scope, 'w').sql} ORDER BY w.id DESC`).all(like, ...SW.params)
+      : db.prepare(`SELECT w.*, c.name AS client_name FROM work_orders w LEFT JOIN clients c ON c.id = w.client_id
+          WHERE ${SC.where(scope, 'w').sql} ORDER BY w.id DESC`).all(...SW.params);
     for (const w of wos) results.push({ type: 'work_order', id: w.id, number: w.wo_number, title: w.title, client: w.client_name,
       status: w.status, date: (w.completed_at || w.created_at || '').slice(0, 10), items: parseItems(w.items), ...woFinancials(w) });
     const jobs = q
       ? db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id
-          WHERE lower(j.title || ' ' || j.description || ' ' || j.job_number || ' ' || COALESCE(c.name,'')) LIKE ? ORDER BY j.id DESC`).all(like)
-      : db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id ORDER BY j.id DESC`).all();
+          WHERE lower(j.title || ' ' || j.description || ' ' || j.job_number || ' ' || COALESCE(c.name,'')) LIKE ?
+          AND ${SC.where(scope, 'j').sql} ORDER BY j.id DESC`).all(like, ...SW.params)
+      : db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id
+          WHERE ${SC.where(scope, 'j').sql} ORDER BY j.id DESC`).all(...SW.params);
     for (const j of jobs) results.push({ type: 'job', id: j.id, number: j.job_number, title: j.title, client: j.client_name,
       status: j.status, date: (j.completed_at || j.created_at || '').slice(0, 10),
       items: db.prepare('SELECT description AS desc, qty, unit_cost FROM job_materials WHERE job_id = ?').all(j.id), ...jobFinancials(j.id) });
     if (q) {
       for (const qt of db.prepare(`SELECT qt.*, c.name AS client_name FROM quotes qt LEFT JOIN clients c ON c.id = qt.client_id
-          WHERE lower(qt.title || ' ' || qt.description || ' ' || qt.quote_number || ' ' || qt.items || ' ' || COALESCE(c.name,'')) LIKE ? ORDER BY qt.id DESC`).all(like)) {
+          WHERE lower(qt.title || ' ' || qt.description || ' ' || qt.quote_number || ' ' || qt.items || ' ' || COALESCE(c.name,'')) LIKE ?
+          AND ${SC.where(scope, 'qt').sql} ORDER BY qt.id DESC`).all(like, ...SW.params)) {
         const t = docTotals(qt);
         results.push({ type: 'quote', id: qt.id, number: qt.quote_number, title: qt.title, client: qt.client_name,
           status: qt.status, date: (qt.created_at || '').slice(0, 10), items: parseItems(qt.items),
           sold_price: t.total, total_cost: t.est_cost, profit: t.est_profit, margin_pct: t.est_margin_pct });
       }
       for (const co of db.prepare(`SELECT co.*, c.name AS client_name FROM change_orders co LEFT JOIN clients c ON c.id = co.client_id
-          WHERE lower(co.title || ' ' || co.description || ' ' || co.co_number || ' ' || co.items) LIKE ? ORDER BY co.id DESC`).all(like)) {
+          WHERE lower(co.title || ' ' || co.description || ' ' || co.co_number || ' ' || co.items) LIKE ?
+          AND ${SC.where(scope, 'co').sql} ORDER BY co.id DESC`).all(like, ...SW.params)) {
         const t = docTotals(co);
         results.push({ type: 'change_order', id: co.id, number: co.co_number, title: co.title, client: co.client_name,
           status: co.status, date: (co.created_at || '').slice(0, 10), items: parseItems(co.items),
@@ -1348,10 +1506,11 @@ async function adminApi(req, res, parts, body, query, user, url) {
   if (resource === 'insights' && method === 'GET') {
     const insights = [];
     const cfg = settings();
-    const targetMargin = Number(cfg.target_margin_pct || 30);
     const add = (kind, severity, title, detail) => insights.push({ kind, severity, title, detail });
 
-    for (const j of db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id WHERE j.status != 'planned'`).all()) {
+    for (const j of db.prepare(`SELECT j.*, c.name AS client_name FROM jobs j LEFT JOIN clients c ON c.id = j.client_id
+        WHERE j.status != 'planned' AND ${SC.where(scope, 'j').sql}`).all(...SW.params)) {
+      const targetMargin = Number(companyOf(j.company_id).target_margin_pct || 30);
       const f = jobFinancials(j.id);
       if (f.sold_price > 0 && f.margin_pct < targetMargin) {
         add('margin', f.margin_pct < 10 ? 'high' : 'medium', `${j.job_number} ${j.title} is running a ${f.margin_pct}% margin`,
@@ -1363,7 +1522,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
       }
     }
     // accounts receivable
-    for (const inv of db.prepare(`SELECT i.*, c.name AS client_name FROM invoices i LEFT JOIN clients c ON c.id = i.client_id WHERE i.status NOT IN ('void','draft','paid')`).all()) {
+    for (const inv of db.prepare(`SELECT i.*, c.name AS client_name FROM invoices i LEFT JOIN clients c ON c.id = i.client_id
+        WHERE i.status NOT IN ('void','draft','paid') AND ${SC.where(scope, 'i').sql}`).all(...SW.params)) {
       const t = invoiceTotals(inv, paidOn(inv.id));
       if (t.balance > 0.005 && inv.due_date && inv.due_date < today()) {
         const days = Math.floor((new Date(today()) - new Date(inv.due_date)) / 864e5);
@@ -1371,22 +1531,24 @@ async function adminApi(req, res, parts, body, query, user, url) {
           `Due ${inv.due_date}. Money you have already spent on labor and material. Call before it ages another month.`);
       }
     }
-    const drafts = db.prepare(`SELECT COUNT(*) n FROM invoices WHERE status = 'draft'`).get().n;
+    const drafts = db.prepare(`SELECT COUNT(*) n FROM invoices WHERE status = 'draft' AND ${SW.sql}`).get(...SW.params).n;
     if (drafts) add('receivable', 'medium', `${drafts} invoice${drafts > 1 ? 's are' : ' is'} still sitting in draft`,
       'Unsent invoices cannot be paid. Send them today and start the clock on your terms.');
     // pending change orders
-    for (const co of db.prepare(`SELECT co.*, j.job_number FROM change_orders co LEFT JOIN jobs j ON j.id = co.job_id WHERE co.status = 'sent'`).all()) {
+    for (const co of db.prepare(`SELECT co.*, j.job_number FROM change_orders co LEFT JOIN jobs j ON j.id = co.job_id
+        WHERE co.status = 'sent' AND ${SC.where(scope, 'co').sql}`).all(...SW.params)) {
       add('changeorder', 'high', `Change order ${co.co_number} on ${co.job_number} is awaiting client approval`,
         `${T.money(docTotals(co).total)} of work that is not yet under contract. Do not let the crew start this until it is signed.`);
     }
     const unpricedIssues = db.prepare(`SELECT c.*, j.job_number FROM job_cards c LEFT JOIN jobs j ON j.id = c.job_id
-      WHERE c.issues != '' AND NOT EXISTS (SELECT 1 FROM change_orders co WHERE co.source_card_id = c.id)`).all();
+      WHERE c.issues != '' AND NOT EXISTS (SELECT 1 FROM change_orders co WHERE co.source_card_id = c.id)
+      AND ${SC.where(scope, 'j').sql}`).all(...SW.params);
     for (const c of unpricedIssues.slice(0, 5)) {
       add('changeorder', 'medium', `Field issue reported on ${c.job_number || 'a job'} with no change order raised`,
         `"${c.issues.slice(0, 140)}" — if this is outside the original scope, price it as a change order before you eat the cost.`);
     }
     // subcontractor compliance
-    for (const s of db.prepare('SELECT * FROM subcontractors WHERE active = 1').all()) {
+    for (const s of db.prepare(`SELECT * FROM subcontractors WHERE active = 1 AND ${SW.sql}`).all(...SW.params)) {
       const coi = db.prepare(`SELECT * FROM sub_documents WHERE sub_id = ? AND doc_type = 'COI' ORDER BY expires_on DESC`).get(s.id);
       if (!coi || !coi.expires_on) { add('compliance', 'high', `${s.name} has no certificate of insurance on file`, 'Do not let them on a site until you have a current COI. Your policy will not cover an uninsured sub.'); continue; }
       const days = Math.floor((new Date(coi.expires_on) - new Date(today())) / 864e5);
@@ -1396,46 +1558,49 @@ async function adminApi(req, res, parts, body, query, user, url) {
         'Request the renewal certificate now so it does not lapse mid-job.');
     }
     // capacity
-    for (const w of capacity(3)) {
+    for (const w of capacity(3, scope)) {
       if (w.overcommitted) add('capacity', 'high', `Week of ${w.week_start} is overcommitted — ${w.committed_hours} hrs scheduled against ${w.available_hours} available`,
         'Something will slip. Move work, add a temp, or call the customer before the week starts rather than after.');
       for (const c of w.conflicts.slice(0, 3)) add('capacity', 'medium', `${c.employee} is double-booked on ${c.date}`,
         `Assigned to ${c.jobs.join(' and ')} — ${c.hours} hours in one day. Fix the schedule before they show up at the wrong site.`);
     }
     // stock, overdue work orders, stale quotes
-    for (const m of db.prepare(`SELECT * FROM materials WHERE qty_on_hand <= reorder_point`).all()) {
+    for (const m of db.prepare(`SELECT * FROM materials WHERE qty_on_hand <= reorder_point AND ${SW.sql}`).all(...SW.params)) {
       const used = db.prepare(`SELECT COALESCE(SUM(qty),0) u FROM job_materials WHERE material_id = ? AND created_at >= datetime('now','-90 days')`).get(m.id).u;
       const suggested = Math.max(Math.ceil(m.reorder_point * 1.5 - m.qty_on_hand), Math.ceil(used / 3) || 0, 1);
       add('stock', m.qty_on_hand <= m.reorder_point / 2 ? 'high' : 'medium',
         `${m.name} is low: ${m.qty_on_hand} ${m.unit} on hand (reorder at ${m.reorder_point})`,
         `90-day usage: ${used} ${m.unit}. Suggested order: ${suggested} ${m.unit} from ${m.vendor || 'your usual vendor'} (~${T.money(round2(suggested * m.unit_cost))}).`);
     }
-    for (const w of db.prepare(`SELECT * FROM work_orders WHERE status IN ('open','in_progress') AND due_date != '' AND due_date < ?`).all(today())) {
+    for (const w of db.prepare(`SELECT * FROM work_orders WHERE status IN ('open','in_progress') AND due_date != '' AND due_date < ? AND ${SW.sql}`).all(today(), ...SW.params)) {
       add('overdue', 'high', `${w.wo_number} "${w.title}" is past due (${w.due_date})`,
         `Priority ${w.priority}. Reassign shop time or call the customer with a new date before it becomes a complaint.`);
     }
-    for (const qt of db.prepare(`SELECT q.*, c.name AS client_name FROM quotes q LEFT JOIN clients c ON c.id = q.client_id WHERE q.status = 'sent' AND q.created_at < datetime('now','-5 days')`).all()) {
+    for (const qt of db.prepare(`SELECT q.*, c.name AS client_name FROM quotes q LEFT JOIN clients c ON c.id = q.client_id
+        WHERE q.status = 'sent' AND q.created_at < datetime('now','-5 days') AND ${SC.where(scope, 'q').sql}`).all(...SW.params)) {
       add('quote', 'medium', `Quote ${qt.quote_number} to ${qt.client_name || 'client'} has been out ${Math.floor((Date.now() - new Date(qt.created_at.replace(' ', 'T') + 'Z')) / 86400e3)} days`,
         `"${qt.title}" — worth ${T.money(docTotals(qt).total)}. Quotes followed up within a week close at roughly double the rate.`);
     }
-    const pendingCards = db.prepare(`SELECT COUNT(*) n FROM job_cards WHERE status = 'submitted'`).get().n;
+    const pendingCards = db.prepare(`SELECT COUNT(*) n FROM job_cards c JOIN employees e ON e.id = c.employee_id
+      WHERE c.status = 'submitted' AND ${SC.where(scope, 'e').sql}`).get(...SW.params).n;
     if (pendingCards) add('cards', 'medium', `${pendingCards} field job card${pendingCards > 1 ? 's' : ''} waiting on office review`,
       'Crew reports sitting unreviewed are hours and materials not yet costed to the job.');
     // estimating accuracy
-    const acc = laborAccuracy();
+    const acc = laborAccuracy(scope);
     if (acc.avg_variance_pct !== null && Math.abs(acc.avg_variance_pct) > 10) {
       add('estimating', acc.avg_variance_pct > 25 ? 'high' : 'medium',
         `Your labor estimates run ${acc.avg_variance_pct > 0 ? acc.avg_variance_pct + '% over' : Math.abs(acc.avg_variance_pct) + '% under'} on average`,
         `Across ${acc.samples.length} jobs with estimates. The quote builder now applies a ${acc.factor}× reality check to new estimates — but the real fix is padding labor at bid time.`);
     }
-    const all = db.prepare(`SELECT status FROM quotes`).all();
+    const all = db.prepare(`SELECT status FROM quotes WHERE ${SW.sql}`).all(...SW.params);
     const decided = all.filter(x => x.status === 'accepted' || x.status === 'declined');
     if (decided.length) {
       const won = decided.filter(x => x.status === 'accepted').length;
       const rate = Math.round(won / decided.length * 100);
       add('winrate', 'info', `Quote win rate: ${rate}%`, `${won} won of ${decided.length} decided. ${rate > 60 ? 'Strong close rate — you may have room to raise prices.' : rate < 30 ? 'Low close rate — review pricing or qualify leads harder.' : 'Healthy range.'}`);
     }
-    const top = db.prepare(`SELECT c.name, SUM(j.sold_price) total FROM jobs j JOIN clients c ON c.id = j.client_id GROUP BY c.id ORDER BY total DESC LIMIT 1`).get();
+    const top = db.prepare(`SELECT c.name, SUM(j.sold_price) total FROM jobs j JOIN clients c ON c.id = j.client_id
+      WHERE c.is_internal = 0 AND ${SC.where(scope, 'j').sql} GROUP BY c.id ORDER BY total DESC LIMIT 1`).get(...SW.params);
     if (top) add('client', 'info', `Top client: ${top.name} (${T.money(round2(top.total))} in jobs)`,
       'Repeat clients cost nothing to win. Schedule a check-in and ask what is on their board for next quarter.');
     if (!cfg.smtp_host) add('setup', 'info', 'Email delivery is not configured yet',
@@ -1599,15 +1764,17 @@ async function adminApi(req, res, parts, body, query, user, url) {
     return json(res, 200, db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 200').all());
   }
   if (resource === 'numbers' && method === 'GET') {
+    const cid = SC.writeCompanyId(scope, query.get('company_id'));
     return json(res, 200, {
-      quote: nextNumber('quotes', 'quote_number', 'Q'), job: nextNumber('jobs', 'job_number', 'J'),
-      wo: nextNumber('work_orders', 'wo_number', 'WO'), po: nextNumber('purchase_orders', 'po_number', 'PO'),
-      co: nextNumber('change_orders', 'co_number', 'CO'), invoice: nextNumber('invoices', 'invoice_number', 'INV'),
+      company_id: cid,
+      quote: nextNumber('quotes', 'quote_number', 'Q', cid), job: nextNumber('jobs', 'job_number', 'J', cid),
+      wo: nextNumber('work_orders', 'wo_number', 'WO', cid), po: nextNumber('purchase_orders', 'po_number', 'PO', cid),
+      co: nextNumber('change_orders', 'co_number', 'CO', cid), invoice: nextNumber('invoices', 'invoice_number', 'INV', cid),
     });
   }
 
   if (RESOURCES[resource]) {
-    const result = crudHandler(resource, method, /^\d+$/.test(idOrAction || '') ? idOrAction : null, body);
+    const result = crudHandler(resource, method, /^\d+$/.test(idOrAction || '') ? idOrAction : null, body, scope);
     if (result && result.error) return json(res, 404, result);
     return json(res, 200, result);
   }
@@ -1663,11 +1830,29 @@ const server = http.createServer(async (req, res) => {
     }
 
     const user = auth.currentUser(req);
+    const scope = SC.resolve(user, parseCookies(req)[SC.COOKIE]);
 
     if (urlPath === '/api/auth/me' && method === 'GET') {
       if (!user) return json(res, 401, { error: 'Not signed in' });
-      return json(res, 200, { id: user.id, username: user.username, role: user.role, employee_id: user.employee_id,
-        name: user.employee_name || user.username, employee_role: user.employee_role, company: settings().company_name });
+      return json(res, 200, {
+        id: user.id, username: user.username, role: user.role, employee_id: user.employee_id,
+        name: user.employee_name || user.username, employee_role: user.employee_role,
+        group_name: settings().group_name || 'Group',
+        scope: {
+          companies: scope.companies.map(c => ({ id: c.id, code: c.code, name: c.name, kind: c.kind, accent: c.accent })),
+          active_id: scope.activeId, active: scope.active ? { id: scope.active.id, code: scope.active.code, name: scope.active.name, kind: scope.active.kind, accent: scope.active.accent } : null,
+          is_group: scope.isGroup, can_switch: scope.canSwitch,
+        },
+      });
+    }
+    // switch which entity's books you are looking at
+    if (urlPath === '/api/scope' && method === 'POST') {
+      if (!user) return json(res, 401, { error: 'Not signed in' });
+      if (!scope.canSwitch) return json(res, 403, { error: 'Your login is pinned to one company' });
+      const want = String(body.company || 'group');
+      const ok = want === 'group' || SC.all().some(c => String(c.id) === want || c.code === want.toUpperCase());
+      if (!ok) return json(res, 400, { error: 'Unknown company' });
+      return json(res, 200, { ok: true }, { 'Set-Cookie': SC.cookie(want) });
     }
     if (urlPath === '/api/auth/password' && method === 'POST') {
       if (!user) return json(res, 401, { error: 'Not signed in' });
@@ -1703,7 +1888,7 @@ const server = http.createServer(async (req, res) => {
     const isAdmin = user.role === 'admin';
     if (urlPath.startsWith('/api/')) {
       if (!isAdmin) return json(res, 403, { error: 'Admin access required' });
-      return await adminApi(req, res, urlPath.split('/').filter(Boolean), body, url.searchParams, user, url);
+      return await adminApi(req, res, urlPath.split('/').filter(Boolean), body, url.searchParams, user, url, scope);
     }
     if (urlPath.startsWith('/outbox/')) {
       if (!isAdmin) { res.writeHead(403); return res.end(); }

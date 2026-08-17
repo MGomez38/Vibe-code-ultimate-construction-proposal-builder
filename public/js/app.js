@@ -94,6 +94,34 @@ async function bootSession() {
   ME = await api('auth/me');
   $('#user-name').textContent = ME.name;
   $('#user-initials').textContent = ME.name.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  renderEntitySwitch();
+}
+
+/** Which set of books you are in — colour-coded so you always know. */
+function renderEntitySwitch() {
+  const s = ME.scope;
+  const active = s.active;
+  document.documentElement.style.setProperty('--entity', active ? active.accent : '#8fa3bb');
+  $('#brand-name').textContent = active ? active.code : 'GROUP';
+  $('#brand-sub').textContent = active ? active.name : (ME.group_name || 'All entities');
+
+  const box = $('#entity-switch');
+  if (!s.can_switch) {
+    box.innerHTML = `<div class="entity-pinned">${esc(active ? active.name : '')}</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <button class="ent ${s.is_group ? 'on' : ''}" data-co="group" style="--c:#8fa3bb">Group</button>
+    ${s.companies.map(c => `<button class="ent ${active && active.id === c.id ? 'on' : ''}" data-co="${c.code}" style="--c:${esc(c.accent)}" title="${esc(c.name)}">${esc(c.code)}</button>`).join('')}`;
+  box.onclick = async e => {
+    const b = e.target.closest('[data-co]');
+    if (!b) return;
+    await api('scope', 'POST', { company: b.dataset.co });
+    ME = await api('auth/me');
+    renderEntitySwitch();
+    route();
+    toast(b.dataset.co === 'group' ? 'Viewing the whole group' : `Switched to ${b.title || b.dataset.co}`, 'ok');
+  };
 }
 $('#user-chip').onclick = e => { e.stopPropagation(); $('#user-drop').classList.toggle('open'); };
 document.addEventListener('click', () => $('#user-drop').classList.remove('open'));
@@ -129,6 +157,7 @@ const TITLES = {
   cashflow: ['Cash Flow Forecast', 'What is coming in, what is going out, and when it gets tight'],
   payroll: ['Payroll', 'Hours, gross pay and certified payroll for public work'],
   subs: ['Subcontractors', 'Trades, insurance certificates and expiry dates'],
+  group: ['Group View', 'Both companies side by side, with intercompany work netted out'],
   reports: ['Reports', 'Where the money comes from and where it goes'],
   users: ['Users & Access', 'Who can sign in, and what they can see'],
   settings: ['Settings', 'Company details, pricing defaults and email delivery'],
@@ -922,13 +951,14 @@ async function jobDetail(id) {
       <div>
         ${badge(job.status)}
         <button class="btn sm ghost" id="jd-edit" style="margin-left:8px">Edit job</button>
+        <button class="btn sm ghost" id="jd-fab">⚒ Send to the shop</button>
         <button class="btn sm primary" id="jd-mat">+ Log material</button>
       </div>
     </div>
 
     <div class="kpis">
       <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Contract Value</div><div class="kpi-value">${money0(f.sold_price)}</div><div class="kpi-note">${f.change_orders.approved ? `base ${money0(f.base_price)} + ${money0(f.change_orders.approved)} in change orders` : 'no change orders'}</div></div>
-      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Cost To Date</div><div class="kpi-value">${money0(f.total_cost)}</div><div class="kpi-note">materials ${money0(f.material_cost)} · labor ${money0(f.labor_cost)} · shop ${money0(f.wo_cost)}${f.sub_cost ? ` · subs ${money0(f.sub_cost)}` : ''}</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Cost To Date</div><div class="kpi-value">${money0(f.total_cost)}</div><div class="kpi-note">materials ${money0(f.material_cost)} · labor ${money0(f.labor_cost)}${f.wo_cost ? ` · shop ${money0(f.wo_cost)}` : ''}${f.intercompany_cost ? ` · <b>fab ${money0(f.intercompany_cost)}</b>` : ''}${f.sub_cost ? ` · subs ${money0(f.sub_cost)}` : ''}</div></div>
       <div class="kpi" style="--kpi-accent:${f.profit >= 0 ? '#2e9e6b' : '#d64545'}"><div class="kpi-label">Profit</div><div class="kpi-value ${f.profit >= 0 ? 'pos' : 'neg'}">${money0(f.profit)}</div><div class="kpi-note">${f.margin_pct}% margin</div></div>
       <div class="kpi" style="--kpi-accent:#3b7dd8"><div class="kpi-label">Labor Hours</div><div class="kpi-value">${f.labor_hours}</div><div class="kpi-note">${f.est_labor_hours ? `${f.est_labor_hours} estimated · <span class="${f.labor_variance_pct > 0 ? 'neg' : 'pos'}">${f.labor_variance_pct > 0 ? '+' : ''}${f.labor_variance_pct}%</span>` : 'from the time clock'}</div></div>
     </div>
@@ -1039,6 +1069,43 @@ async function jobDetail(id) {
 
   attachmentEditor($('#jd-plans'), 'job', job.id);
   $('#jd-edit').onclick = () => jobModal(job);
+
+  $('#jd-fab').onclick = async () => {
+    const companies = ME.scope.companies.filter(c => c.id !== job.company_id);
+    if (!companies.length) return toast('There is no sister company to send work to', 'err');
+    const items = [];
+    openModal(`
+      <div class="modal-head"><h2>Send fabrication to the shop</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin-bottom:14px;font-size:13px">
+          This raises a work order on the other company's books against <span class="mono strong">${esc(job.job_number)}</span>.
+          What you enter as the price is what they will charge you — it becomes their revenue and this job's cost.
+        </p>
+        <form id="fab-form" class="form-grid">
+          <label class="fld">Built by<select name="builder_company_id">
+            ${companies.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+          <label class="fld">Priority<select name="priority">${['low', 'normal', 'high', 'rush'].map(p => `<option ${p === 'normal' ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+          <label class="fld full">What are they building<input name="title" required placeholder="e.g. 12 steel window bucks per A-301"></label>
+          <label class="fld full">Details / drawing refs<textarea name="description"></textarea></label>
+          <label class="fld">Price they will charge you $<input name="sold_price" type="number" step="any" value="0" required></label>
+          <label class="fld">Needed by<input name="due_date" type="date" value="${todayStr()}"></label>
+          <label class="fld">Their shop hours (est.)<input name="labor_hours" type="number" step="any" value="0"></label>
+          <label class="fld">Type<select name="wo_type">${['Fabrication', 'Shop', 'Repair'].map(t => `<option>${t}</option>`).join('')}</select></label>
+        </form>
+        <h3 style="margin:16px 0 4px;font-size:13px">Material list for the shop</h3>
+        <div id="fab-items"></div>
+      </div>
+      <div class="modal-foot"><button class="btn ghost modal-close">Cancel</button><button class="btn primary" id="fab-go">Raise Work Order</button></div>`);
+    lineItemEditor($('#fab-items'), items);
+    $('#fab-go').onclick = async () => {
+      const f = formData($('#fab-form'));
+      if (!f.title) return toast('Say what they are building', 'err');
+      try {
+        const r = await api(`jobs/${job.id}/fabricate`, 'POST', { ...f, items: items.filter(i => i.desc) });
+        closeModal(); toast(r.message, 'ok'); route();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  };
   $('#jd-co').onclick = () => { location.hash = '#/changeorders'; setTimeout(() => window.coModalFor && window.coModalFor(null, job.id), 400); };
   $('#jd-bill').onclick = () => { location.hash = '#/invoices'; setTimeout(() => { const b = $('#inv-progress'); if (b) b.click(); }, 400); };
   $('#jd-mat').onclick = () => {
@@ -1899,6 +1966,87 @@ PAGES.invoices = async () => {
   }
 };
 
+// ---------------------------------------------------------------- GROUP VIEW
+PAGES.group = async () => {
+  const d = await api('group');
+  const g = d.group;
+  const maxRev = Math.max(...d.entities.map(e => e.revenue), 1);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Group Revenue</div><div class="kpi-value">${money0(g.external_revenue)}</div><div class="kpi-note">money from outside customers only</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Group Profit</div><div class="kpi-value pos">${money0(g.profit)}</div><div class="kpi-note">${g.margin_pct}% blended margin</div></div>
+      <div class="kpi" style="--kpi-accent:#7c5cd6"><div class="kpi-label">Intercompany Volume</div><div class="kpi-value">${money0(g.intercompany_revenue)}</div><div class="kpi-note">All Spec billed to DTS — netted out above</div></div>
+      <div class="kpi" style="--kpi-accent:${g.open_receivables ? '#f5a524' : '#8496aa'}"><div class="kpi-label">Owed To The Group</div><div class="kpi-value">${money0(g.open_receivables)}</div><div class="kpi-note">across both entities</div></div>
+    </div>
+
+    <div class="grid grid-2">
+      ${d.entities.map(e => `
+        <div class="card entity-card" style="--c:${esc(e.accent)}">
+          <h3><span class="ent-dot" style="background:${esc(e.accent)}"></span>${esc(e.name)}
+            <span class="hint">${esc(cap(e.kind))}</span></h3>
+          <table class="tbl">
+            <tr><td class="muted">Revenue</td><td class="num strong">${money(e.revenue)}</td></tr>
+            <tr><td class="muted" style="padding-left:22px">from outside customers</td><td class="num">${money(e.external_revenue)}</td></tr>
+            <tr><td class="muted" style="padding-left:22px">from the sister company</td><td class="num ${e.internal_revenue ? '' : 'muted'}">${money(e.internal_revenue)}</td></tr>
+            <tr><td class="muted">Cost</td><td class="num">${money(e.cost)}</td></tr>
+            <tr><td class="strong">Profit</td><td class="num ${e.profit >= 0 ? 'pos' : 'neg'} strong">${money(e.profit)} <span class="muted">(${e.margin_pct}%)</span></td></tr>
+            <tr><td class="muted">Owed to them</td><td class="num">${money(e.open_receivables)}</td></tr>
+          </table>
+          <div class="bar-row" style="margin-top:12px">
+            <span class="track"><i style="width:${Math.round(e.revenue / maxRev * 100)}%;background:${esc(e.accent)}"></i></span>
+          </div>
+        </div>`).join('')}
+    </div>
+
+    <div class="card section-gap">
+      <h3>How The Group Total Is Built <span class="hint">why it is not just the two added together</span></h3>
+      <table class="tbl">
+        <tr><td>Both entities' revenue added together</td><td class="num">${money(g.combined_revenue_before_elimination)}</td></tr>
+        <tr><td class="muted">Less: All Spec billing DTS — money that never left the group</td><td class="num neg">−${money(g.intercompany_revenue)}</td></tr>
+        <tr style="border-top:2px solid var(--line)"><td class="strong">Group revenue from outside customers</td><td class="num strong">${money(g.external_revenue)}</td></tr>
+        <tr><td class="muted">Less: combined cost, with the intercompany charge removed</td><td class="num neg">−${money(g.cost)}</td></tr>
+        <tr style="border-top:2px solid var(--line)"><td class="strong">Group profit</td><td class="num strong pos">${money(g.profit)}</td></tr>
+      </table>
+      <p class="muted" style="font-size:12.5px;margin-top:12px">
+        When All Spec fabricates for DTS, All Spec books revenue and DTS books a cost — correct for each entity's own return, but the
+        cash only moved between your own pockets. Group revenue counts what outside customers actually paid.
+      </p>
+    </div>
+
+    <div class="card section-gap">
+      <h3>Work Flowing Between The Companies
+        ${d.unbilled_intercompany ? `<span class="hint neg">${money0(d.unbilled_intercompany)} built but not yet billed</span>` : '<span class="hint">all billed</span>'}
+      </h3>
+      ${d.flows.length ? `<table class="tbl"><thead><tr>
+        <th>Ticket</th><th>What</th><th>Built by</th><th>For</th><th>Against</th><th class="num">Charged</th><th>Status</th><th></th>
+      </tr></thead><tbody>
+        ${d.flows.map(f => `<tr>
+          <td class="mono strong">${esc(f.wo_number)}</td>
+          <td>${esc(f.title)}</td>
+          <td><span class="badge b-sent">${esc(f.builder || '')}</span></td>
+          <td><span class="badge b-in_progress">${esc(f.buyer || '')}</span></td>
+          <td class="mono muted">${esc(f.origin_job_number || '')}</td>
+          <td class="num strong">${money(f.charged)}</td>
+          <td>${badge(f.status)}</td>
+          <td>${f.billed ? '<span class="badge b-accepted">Billed</span>'
+            : (f.status === 'completed' || f.status === 'archived')
+              ? `<button class="btn sm green" data-bill="${f.id}">Bill it</button>`
+              : '<span class="muted" style="font-size:12px">in the shop</span>'}</td>
+        </tr>`).join('')}
+      </tbody></table>` : '<div class="empty">No work has crossed between the companies yet.</div>'}
+      <p class="muted" style="font-size:12.5px;margin-top:12px">Anything built but unbilled is profit sitting in the wrong entity — bill it so both sets of books are straight.</p>
+    </div>`;
+
+  view.onclick = async e => {
+    if (!e.target.dataset.bill) return;
+    try {
+      const r = await api(`workorders/${e.target.dataset.bill}/bill`, 'POST', {});
+      toast(r.message, 'ok'); route();
+    } catch (err) { toast(err.message, 'err'); }
+  };
+};
+
 // ---------------------------------------------------------------- CASH FLOW
 PAGES.cashflow = async () => {
   const [cf, settings] = await Promise.all([api('cashflow?weeks=13'), api('settings')]);
@@ -2334,35 +2482,61 @@ PAGES.users = async () => {
 
 // ---------------------------------------------------------------- SETTINGS
 PAGES.settings = async () => {
-  const [s, emails] = await Promise.all([api('settings'), api('emails')]);
+  const [s, emails, companies] = await Promise.all([api('settings'), api('emails'), api('companies')]);
+  // edit whichever entity you are currently in; in group view, start with the first
+  let editingId = ME.scope.active_id || companies[0].id;
+  const co = () => companies.find(c => c.id === editingId) || companies[0];
+
   const f = (name, label, opts = {}) => `
     <label class="fld ${opts.full ? 'full' : ''}">${label}
       ${opts.textarea
         ? `<textarea name="${name}" style="min-height:${opts.height || 90}px">${esc(s[name] || '')}</textarea>`
         : `<input name="${name}" type="${opts.type || 'text'}" value="${esc(s[name] || '')}" placeholder="${esc(opts.placeholder || '')}">`}
     </label>`;
+  const cf = (name, label, opts = {}) => {
+    const v = co()[name];
+    return `<label class="fld ${opts.full ? 'full' : ''}">${label}
+      ${opts.textarea
+        ? `<textarea name="${name}" style="min-height:${opts.height || 90}px">${esc(v ?? '')}</textarea>`
+        : `<input name="${name}" type="${opts.type || 'text'}" value="${esc(v ?? '')}" placeholder="${esc(opts.placeholder || '')}">`}
+    </label>`;
+  };
 
   view.innerHTML = `
+    ${companies.length > 1 ? `<div class="toolbar">
+      <div class="filters" id="co-tabs">
+        ${companies.map(c => `<span class="chip ${c.id === editingId ? 'active' : ''}" data-co="${c.id}" style="--c:${esc(c.accent)}">
+          <span class="ent-dot" style="background:${esc(c.accent)}"></span>${esc(c.name)}</span>`).join('')}
+      </div>
+      <span class="muted">Each entity bills, prices and brands itself separately.</span>
+    </div>` : ''}
     <div class="grid grid-2">
       <div>
-        <div class="card">
-          <h3>Company</h3>
+        <div class="card" style="border-top:3px solid ${esc(co().accent)}">
+          <h3>${esc(co().name)} <span class="hint">${esc(cap(co().kind))} · ${esc(co().code)}</span></h3>
           <form id="set-company" class="form-grid">
-            ${f('company_name', 'Company name', { full: true })}
-            ${f('company_address', 'Address', { full: true })}
-            ${f('company_phone', 'Phone')}
-            ${f('company_email', 'Office email')}
-            ${f('company_website', 'Website', { full: true })}
+            ${cf('name', 'Trading name', { full: true })}
+            ${cf('legal_name', 'Legal entity name', { full: true })}
+            ${cf('tagline', 'Tagline shown on documents', { full: true })}
+            ${cf('address', 'Address', { full: true })}
+            ${cf('phone', 'Phone')}
+            ${cf('email', 'Office email')}
+            ${cf('website', 'Website')}
+            ${cf('license_number', 'License #')}
+            ${cf('accent', 'Brand colour', { placeholder: '#f5a524' })}
+            ${cf('mail_from', 'Send mail as', { placeholder: 'Company <office@company.com>' })}
           </form>
         </div>
         <div class="card">
-          <h3>Pricing Defaults</h3>
+          <h3>${esc(co().code)} Pricing Defaults</h3>
           <form id="set-pricing" class="form-grid">
-            ${f('default_labor_rate', 'Default labor rate $/hr', { type: 'number' })}
-            ${f('default_tax_pct', 'Default tax %', { type: 'number' })}
-            ${f('target_margin_pct', 'Target margin %', { type: 'number' })}
-            <div class="fld"><span></span></div>
-            ${f('quote_terms', 'Terms printed on every proposal', { textarea: true, full: true, height: 120 })}
+            ${cf('default_labor_rate', 'Default labor rate $/hr', { type: 'number' })}
+            ${cf('default_tax_pct', 'Default tax %', { type: 'number' })}
+            ${cf('target_margin_pct', 'Target margin %', { type: 'number' })}
+            ${cf('default_retainage_pct', 'Default retainage %', { type: 'number' })}
+            ${cf('payment_terms_days', 'Payment terms (days)', { type: 'number' })}
+            ${cf('cash_on_hand', 'Cash on hand', { type: 'number' })}
+            ${cf('quote_terms', 'Terms printed on every proposal', { textarea: true, full: true, height: 120 })}
           </form>
         </div>
       </div>
@@ -2384,12 +2558,13 @@ PAGES.settings = async () => {
           </form>
         </div>
         <div class="card">
-          <h3>Getting Paid</h3>
+          <h3>${esc(co().code)} Getting Paid</h3>
           <form id="set-pay" class="form-grid">
-            ${f('payment_link_url', 'Payment link customers can click', { full: true, placeholder: 'https://buy.stripe.com/… or your Square / PayPal link' })}
-            ${f('payment_instructions', 'Remittance instructions printed on invoices', { textarea: true, full: true, height: 70 })}
-            ${f('stripe_webhook_secret', 'Stripe webhook signing secret', { type: 'password', full: true, placeholder: 'whsec_…' })}
-            ${f('cash_on_hand', 'Cash on hand (starting point for the forecast)', { type: 'number', full: true })}
+            ${cf('payment_link_url', 'Payment link customers can click', { full: true, placeholder: 'https://buy.stripe.com/… or your Square / PayPal link' })}
+            ${cf('payment_instructions', 'Remittance instructions printed on invoices', { textarea: true, full: true, height: 70 })}
+          </form>
+          <form id="set-pay-global" class="form-grid" style="margin-top:12px">
+            ${f('stripe_webhook_secret', 'Stripe webhook signing secret (shared)', { type: 'password', full: true, placeholder: 'whsec_…' })}
           </form>
           <p class="muted" style="font-size:12.5px;margin-top:10px">Paste a payment link and a <b>Pay online</b> button appears on every unpaid invoice. Add the webhook secret and point your processor at <span class="mono">${esc(location.origin)}/api/webhooks/stripe</span> to have payments record themselves.</p>
         </div>
@@ -2425,13 +2600,24 @@ PAGES.settings = async () => {
       <button class="btn primary" id="set-save">Save All Settings</button>
     </div>`;
 
+  const tabs = $('#co-tabs');
+  if (tabs) tabs.onclick = e => {
+    const c = e.target.closest('[data-co]'); if (!c) return;
+    editingId = +c.dataset.co;
+    PAGES.settings();
+  };
+
   $('#set-save').onclick = async () => {
-    const payload = { ...formData($('#set-company')), ...formData($('#set-pricing')), ...formData($('#set-mail')), ...formData($('#set-pay')) };
-    // a masked password field means "leave it alone" — the server ignores it too
-    if (/^•+$/.test(String(payload.smtp_pass))) delete payload.smtp_pass;
-    await api('settings', 'PUT', payload);
-    toast('Settings saved', 'ok');
+    // company-specific fields go on the entity, shared plumbing stays global
+    const perCompany = { ...formData($('#set-company')), ...formData($('#set-pricing')), ...formData($('#set-pay')) };
+    const global = { ...formData($('#set-mail')), ...formData($('#set-pay-global')) };
+    if (/^•+$/.test(String(global.smtp_pass))) delete global.smtp_pass;
+    delete global.mail_from;                        // mail_from is per entity
+    await api('companies/' + editingId, 'PUT', perCompany);
+    await api('settings', 'PUT', global);
+    toast(`${co().name} settings saved`, 'ok');
     $('#save-note').textContent = 'Saved ' + new Date().toLocaleTimeString();
+    ME = await api('auth/me'); renderEntitySwitch();
   };
 
   async function loadBackups() {
