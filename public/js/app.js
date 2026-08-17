@@ -84,6 +84,7 @@ async function refreshBadges() {
     set('#co-badge', cos.filter(c => c.status === 'sent').length);
     set('#ar-badge', aging.open.filter(o => o.days_overdue > 0).length);
     set('#sub-badge', subs.filter(s => s.active && !s.compliant).length);
+    api('cashflow?weeks=13').then(cf => { const el = $('#cash-badge'); if (el) el.textContent = cf.first_shortfall ? '!' : ''; }).catch(() => {});
   } catch { /* ignore */ }
 }
 
@@ -125,6 +126,7 @@ const TITLES = {
   jobcards: ['Field Job Cards', 'Daily reports submitted by the crew'],
   changeorders: ['Change Orders', 'Added scope, priced and signed before you build it'],
   invoices: ['Invoices & Receivables', 'What you have billed and what you are owed'],
+  cashflow: ['Cash Flow Forecast', 'What is coming in, what is going out, and when it gets tight'],
   payroll: ['Payroll', 'Hours, gross pay and certified payroll for public work'],
   subs: ['Subcontractors', 'Trades, insurance certificates and expiry dates'],
   reports: ['Reports', 'Where the money comes from and where it goes'],
@@ -337,7 +339,12 @@ PAGES.clock = async () => {
             </div>`).join('') : '<div class="empty">Nobody clocked in.</div>'}
         </div>
         <div class="card">
-          <h3>Today's Timesheet</h3>
+          <h3>Timesheet
+            <span class="hint" style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <input type="date" id="ts-date" value="${todayStr()}" style="border:1px solid var(--line);border-radius:6px;padding:4px 7px;font-size:12.5px">
+              <button class="btn sm primary" id="ts-add">+ Add entry</button>
+            </span>
+          </h3>
           <div id="ts-today"></div>
         </div>
       </div>
@@ -347,17 +354,71 @@ PAGES.clock = async () => {
   tick(); const iv = setInterval(() => { if (!$('#kiosk-time')) return clearInterval(iv); tick(); }, 1000);
 
   async function loadTimesheet() {
-    const rows = await api(`timesheets?from=${todayStr()}&to=${todayStr()}`);
-    $('#ts-today').innerHTML = rows.length ? `<table class="tbl"><thead><tr><th>Who</th><th>Where</th><th>In</th><th>Out</th><th class="num">Hours</th></tr></thead><tbody>
+    const day = $('#ts-date').value || todayStr();
+    const rows = await api(`timesheets?from=${day}&to=${day}`);
+    $('#ts-today').innerHTML = rows.length ? `<table class="tbl"><thead><tr><th>Who</th><th>Where</th><th>In</th><th>Out</th><th class="num">Hours</th><th></th></tr></thead><tbody>
       ${rows.map(r => `<tr>
         <td class="strong">${esc(r.employee_name)}</td>
         <td>${r.job_number ? `<span class="mono">${esc(r.job_number)}</span>` : '<span class="muted">Shift</span>'}</td>
         <td class="mono">${fmtTime(r.clock_in)}</td>
         <td class="mono">${r.clock_out ? fmtTime(r.clock_out) : '<span class="badge b-in">live</span>'}</td>
-        <td class="num">${r.hours ?? '—'}</td></tr>`).join('')}
-    </tbody></table>` : '<div class="empty">No entries yet today.</div>';
+        <td class="num">${r.hours ?? '—'}</td>
+        <td style="white-space:nowrap"><button class="btn sm ghost" data-te="${r.id}">Edit</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">No entries on this day.</div>';
+    $('#ts-today').onclick = e => { if (e.target.dataset.te) entryModal(rows.find(r => r.id === +e.target.dataset.te)); };
   }
+  $('#ts-date').onchange = loadTimesheet;
+  $('#ts-add').onclick = () => entryModal();
   loadTimesheet();
+
+  // local datetime strings for <input type="datetime-local">, which has no timezone
+  const toLocalInput = ts => {
+    const d = parseTs(ts);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  };
+  const fromLocalInput = v => v ? new Date(v).toISOString().replace('T', ' ').slice(0, 19) : '';
+
+  function entryModal(entry) {
+    openModal(`
+      <div class="modal-head"><h2>${entry ? 'Correct time entry' : 'Add a time entry'}</h2><button class="modal-close">×</button></div>
+      <div class="modal-body">
+        ${entry ? '' : '<p class="muted" style="margin-bottom:14px;font-size:13px">Use this when somebody forgot to punch, or worked without access to the clock.</p>'}
+        <form id="te-form" class="form-grid">
+          <label class="fld">Employee<select name="employee_id">
+            ${active.map(e => `<option value="${e.id}" ${entry && entry.employee_id === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}
+          </select></label>
+          <label class="fld">Job<select name="job_id"><option value="">General shift / shop</option>
+            ${jobs.map(j => `<option value="${j.id}" ${entry && entry.job_id === j.id ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}
+          </select></label>
+          <label class="fld">Clock in<input name="clock_in" type="datetime-local" value="${entry ? toLocalInput(entry.clock_in) : ''}"></label>
+          <label class="fld">Clock out <span style="font-weight:400">(blank = still on the clock)</span><input name="clock_out" type="datetime-local" value="${entry && entry.clock_out ? toLocalInput(entry.clock_out) : ''}"></label>
+          <label class="fld full">Note<input name="notes" value="${esc(entry?.notes || '')}" placeholder="why this was corrected"></label>
+        </form>
+        <p class="muted" style="font-size:12.5px;margin-top:10px">Every correction is written to the activity log with the before and after times.</p>
+      </div>
+      <div class="modal-foot">
+        ${entry ? '<button class="btn danger" id="te-del" style="margin-right:auto">Delete</button>' : ''}
+        <button class="btn ghost modal-close">Cancel</button>
+        <button class="btn primary" id="te-save">Save</button>
+      </div>`, { narrow: true });
+
+    $('#te-save').onclick = async () => {
+      const f = formData($('#te-form'));
+      const payload = { employee_id: +f.employee_id, job_id: f.job_id ? +f.job_id : null,
+        clock_in: fromLocalInput(f.clock_in), clock_out: fromLocalInput(f.clock_out) || null, notes: f.notes };
+      if (!payload.clock_in) return toast('A clock-in time is required', 'err');
+      try {
+        if (entry) await api('timeentries/' + entry.id, 'PUT', payload);
+        else await api('timeentries', 'POST', payload);
+        closeModal(); toast('Timesheet updated', 'ok'); loadTimesheet(); refreshOnClock();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    if (entry) $('#te-del').onclick = async () => {
+      if (!confirm(`Delete ${entry.employee_name}'s entry? This changes job costs and payroll.`)) return;
+      await api('timeentries/' + entry.id, 'DELETE');
+      closeModal(); toast('Entry deleted', 'ok'); loadTimesheet(); refreshOnClock();
+    };
+  }
 
   async function punch(dir) {
     const body = { employee_id: +$('#ck-emp').value, pin: $('#ck-pin').value };
@@ -474,7 +535,10 @@ PAGES.quotes = async () => {
         <td>${esc(q.title)}</td>
         <td class="num">${money(q.totals.total)}</td>
         <td class="num pos">${money0(q.totals.total - q.totals.est_cost)}</td>
-        <td>${badge(q.status)}${q.sent_at ? `<div class="muted" style="font-size:11px;margin-top:2px">emailed ${esc(q.sent_at.slice(0, 10))}</div>` : ''}</td>
+        <td>${badge(q.status)}
+          ${q.sent_at ? `<div class="muted" style="font-size:11px;margin-top:2px">rev ${q.revision || 1} · emailed ${esc(q.sent_at.slice(0, 10))}</div>` : ''}
+          ${q.has_drift ? '<div class="drift" title="The customer\'s copy is out of date">edited since sent</div>' : ''}
+        </td>
         <td style="white-space:nowrap">
           <button class="btn sm ghost" data-edit="${q.id}">Edit</button>
           <button class="btn sm" data-mail="${q.id}">✉ Email</button>
@@ -1418,7 +1482,10 @@ PAGES.changeorders = async () => {
         <td class="muted">${esc(cap(c.reason || '—'))}</td>
         <td class="num strong">${money(c.totals.total)}</td>
         <td class="num muted">${c.schedule_days || 0}</td>
-        <td>${badge(c.status)}${c.client_signature ? `<div class="muted" style="font-size:11px;margin-top:2px">✓ ${esc(c.client_signature)}</div>` : ''}</td>
+        <td>${badge(c.status)}
+          ${c.client_signature ? `<div class="muted" style="font-size:11px;margin-top:2px">✓ ${esc(c.client_signature)}${c.approved_revision ? ` (rev ${c.approved_revision})` : ''}</div>` : ''}
+          ${c.has_drift ? '<div class="drift" title="The customer\'s copy is out of date">edited since sent</div>' : ''}
+        </td>
         <td style="white-space:nowrap">
           <button class="btn sm ghost" data-edit="${c.id}">Edit</button>
           ${c.status === 'draft' || c.status === 'sent' ? `<button class="btn sm" data-mail="${c.id}">✉ ${c.status === 'sent' ? 'Resend' : 'Send'}</button>` : ''}
@@ -1739,6 +1806,67 @@ PAGES.invoices = async () => {
       await api('invoices/' + inv.id, 'DELETE'); closeModal(); toast('Deleted', 'ok'); route();
     };
   }
+};
+
+// ---------------------------------------------------------------- CASH FLOW
+PAGES.cashflow = async () => {
+  const [cf, settings] = await Promise.all([api('cashflow?weeks=13'), api('settings')]);
+  const maxFlow = Math.max(...cf.weeks.map(w => Math.max(w.inflow, w.outflow)), 1);
+  const minBal = Math.min(0, ...cf.weeks.map(w => w.balance));
+  const maxBal = Math.max(1, ...cf.weeks.map(w => w.balance));
+  const H = 150, W = 700, pad = 34;
+  const x = i => pad + i * ((W - pad * 2) / Math.max(1, cf.weeks.length - 1));
+  const y = v => H - pad / 2 - ((v - minBal) / (maxBal - minBal || 1)) * (H - pad);
+  const line = cf.weeks.map((w, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(w.balance).toFixed(1)}`).join(' ');
+  const zeroY = y(0);
+
+  view.innerHTML = `
+    <div class="kpis">
+      <div class="kpi" style="--kpi-accent:#131c26"><div class="kpi-label">Cash On Hand</div><div class="kpi-value">${money0(cf.opening_balance)}</div><div class="kpi-note">${cf.opening_balance ? 'set in Settings' : '<a class="plain" href="#/settings">set your starting balance →</a>'}</div></div>
+      <div class="kpi" style="--kpi-accent:#2e9e6b"><div class="kpi-label">Expected In</div><div class="kpi-value pos">${money0(cf.total_in)}</div><div class="kpi-note">unpaid invoices, next 13 weeks</div></div>
+      <div class="kpi" style="--kpi-accent:#d64545"><div class="kpi-label">Committed Out</div><div class="kpi-value neg">${money0(cf.total_out)}</div><div class="kpi-note">scheduled payroll + POs in transit</div></div>
+      <div class="kpi" style="--kpi-accent:${cf.first_shortfall ? '#d64545' : '#2e9e6b'}"><div class="kpi-label">Projected Balance</div><div class="kpi-value ${cf.closing_balance < 0 ? 'neg' : ''}">${money0(cf.closing_balance)}</div><div class="kpi-note">${cf.first_shortfall ? `<span class="neg">short by ${esc(cf.first_shortfall)}</span>` : 'stays positive throughout'}</div></div>
+    </div>
+
+    ${cf.first_shortfall ? `<div class="insight" style="border-left:5px solid var(--red);margin-bottom:16px">
+      <div class="sev high"></div>
+      <div><h4>Cash runs short the week of ${esc(cf.first_shortfall)}</h4>
+      <p>On current commitments you run out of money that week. Options, roughly in order of speed: collect the overdue invoices below, bill the ${money0(cf.unbilled)} of work you have delivered but not invoiced, push a purchase order, or move scheduled crew.</p></div>
+    </div>` : ''}
+
+    <div class="card">
+      <h3>Projected Balance <span class="hint">13 weeks, from commitments already in the system</span></h3>
+      <div class="chart-wrap">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:190px">
+          ${minBal < 0 ? `<rect x="${pad}" y="${zeroY}" width="${W - pad * 2}" height="${Math.max(0, H - pad / 2 - zeroY)}" fill="#fbeded"/>` : ''}
+          <line x1="${pad}" y1="${zeroY}" x2="${W - pad}" y2="${zeroY}" stroke="#dde3ea" stroke-width="1" stroke-dasharray="4 3"/>
+          <path d="${line}" fill="none" stroke="#131c26" stroke-width="2.5" stroke-linejoin="round"/>
+          ${cf.weeks.map((w, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(w.balance).toFixed(1)}" r="3.5" fill="${w.short ? '#d64545' : '#f5a524'}"><title>${w.week_start}: ${money(w.balance)}</title></circle>`).join('')}
+        </svg>
+      </div>
+      <div class="legend"><span><i style="background:#131c26"></i>Running balance</span><span><i style="background:#d64545"></i>Negative week</span></div>
+    </div>
+
+    <div class="card section-gap">
+      <h3>Week By Week</h3>
+      <table class="tbl"><thead><tr>
+        <th>Week of</th><th class="num">In</th><th class="num">Out</th><th class="num">Net</th><th class="num">Balance</th><th>What drives it</th>
+      </tr></thead><tbody>
+        ${cf.weeks.map(w => `<tr ${w.short ? 'style="background:#fdf4f4"' : ''}>
+          <td class="mono strong">${new Date(w.week_start + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric' })}</td>
+          <td class="num ${w.inflow ? 'pos' : 'muted'}">${w.inflow ? money0(w.inflow) : '—'}</td>
+          <td class="num ${w.outflow ? 'neg' : 'muted'}">${w.outflow ? money0(w.outflow) : '—'}</td>
+          <td class="num ${w.net >= 0 ? '' : 'neg'}">${money0(w.net)}</td>
+          <td class="num strong ${w.short ? 'neg' : ''}">${money0(w.balance)}</td>
+          <td class="muted" style="font-size:12px">${[...w.inflows, ...w.outflows].slice(0, 3).map(f => esc(f.label)).join(' · ') || '—'}</td>
+        </tr>`).join('')}
+      </tbody></table>
+      <p class="muted" style="font-size:12.5px;margin-top:12px">
+        Inflows are unpaid invoices at their due dates — anything overdue is counted in the first week, since that money is already late.
+        Outflows are crew hours already on the schedule at their pay rates, plus purchase orders in transit at their expected dates.
+        Work you have delivered but not yet invoiced (<b>${money0(cf.unbilled)}</b>) is <b>not</b> counted until you bill it.
+      </p>
+    </div>`;
 };
 
 // ---------------------------------------------------------------- PAYROLL
@@ -2165,6 +2293,30 @@ PAGES.settings = async () => {
           </form>
         </div>
         <div class="card">
+          <h3>Getting Paid</h3>
+          <form id="set-pay" class="form-grid">
+            ${f('payment_link_url', 'Payment link customers can click', { full: true, placeholder: 'https://buy.stripe.com/… or your Square / PayPal link' })}
+            ${f('payment_instructions', 'Remittance instructions printed on invoices', { textarea: true, full: true, height: 70 })}
+            ${f('stripe_webhook_secret', 'Stripe webhook signing secret', { type: 'password', full: true, placeholder: 'whsec_…' })}
+            ${f('cash_on_hand', 'Cash on hand (starting point for the forecast)', { type: 'number', full: true })}
+          </form>
+          <p class="muted" style="font-size:12.5px;margin-top:10px">Paste a payment link and a <b>Pay online</b> button appears on every unpaid invoice. Add the webhook secret and point your processor at <span class="mono">${esc(location.origin)}/api/webhooks/stripe</span> to have payments record themselves.</p>
+        </div>
+
+        <div class="card">
+          <h3>Backups <span class="hint">automatic, daily</span></h3>
+          <div id="backup-list"><div class="empty">Loading…</div></div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button class="btn primary sm" id="bk-now">Back up now</button>
+            <a class="btn ghost sm" href="/api/export" download>⬇ Export everything (JSON)</a>
+            <a class="btn ghost sm" href="/api/export/invoices.csv" download>⬇ Invoices CSV</a>
+            <a class="btn ghost sm" href="/api/export/jobs.csv" download>⬇ Jobs CSV</a>
+            <a class="btn ghost sm" href="/api/export/time_entries.csv" download>⬇ Time CSV</a>
+          </div>
+          <p class="muted" style="font-size:12.5px;margin-top:10px">A snapshot is written automatically once a day and on startup; the newest ${'14'} are kept. <b>To restore:</b> stop the server, replace <span class="mono">data/dts.db</span> with a downloaded snapshot, and start it again.</p>
+        </div>
+
+        <div class="card">
           <h3>Sent Proposals <span class="hint">last 100</span></h3>
           ${emails.length ? `<table class="tbl"><thead><tr><th>When</th><th>To</th><th>Status</th><th></th></tr></thead><tbody>
             ${emails.map(e => `<tr>
@@ -2183,12 +2335,39 @@ PAGES.settings = async () => {
     </div>`;
 
   $('#set-save').onclick = async () => {
-    const payload = { ...formData($('#set-company')), ...formData($('#set-pricing')), ...formData($('#set-mail')) };
+    const payload = { ...formData($('#set-company')), ...formData($('#set-pricing')), ...formData($('#set-mail')), ...formData($('#set-pay')) };
     // a masked password field means "leave it alone" — the server ignores it too
     if (/^•+$/.test(String(payload.smtp_pass))) delete payload.smtp_pass;
     await api('settings', 'PUT', payload);
     toast('Settings saved', 'ok');
     $('#save-note').textContent = 'Saved ' + new Date().toLocaleTimeString();
+  };
+
+  async function loadBackups() {
+    const { backups } = await api('backups');
+    const el = $('#backup-list');
+    if (!el) return;
+    el.innerHTML = backups.length ? `<table class="tbl"><thead><tr><th>Snapshot</th><th class="num">Size</th><th></th></tr></thead><tbody>
+      ${backups.slice(0, 6).map(b => `<tr>
+        <td class="mono" style="font-size:12px">${esc(b.filename.replace(/^dts-|\.db$/g, '').replace(/T/, ' '))}</td>
+        <td class="num muted">${Math.round(b.size / 1024).toLocaleString()} KB</td>
+        <td style="white-space:nowrap">
+          <a class="btn sm ghost" href="/api/backups/${encodeURIComponent(b.filename)}" download>Download</a>
+          <button class="btn sm ghost" data-bkdel="${esc(b.filename)}">×</button>
+        </td></tr>`).join('')}
+    </tbody></table>${backups.length > 6 ? `<p class="muted" style="font-size:12px;margin-top:8px">+ ${backups.length - 6} older</p>` : ''}`
+      : '<div class="empty">No snapshots yet.</div>';
+    el.onclick = async e => {
+      if (!e.target.dataset.bkdel) return;
+      if (!confirm('Delete this snapshot?')) return;
+      await api('backups/' + encodeURIComponent(e.target.dataset.bkdel), 'DELETE');
+      loadBackups();
+    };
+  }
+  loadBackups();
+  $('#bk-now').onclick = async () => {
+    const r = await api('backups', 'POST', {});
+    toast(r.message, 'ok'); loadBackups();
   };
 };
 

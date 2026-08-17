@@ -37,6 +37,12 @@ Change these before real use — **Users & Access** for other people, the avatar
 
 **Invoicing and receivables.** Deposit, progress and final invoices with retainage held back and released at closeout. "Bill a job by % complete" reads the contract value (including approved change orders), subtracts what you have already billed, and drafts the difference. Record payments, watch the aging buckets, and get told which invoices need a phone call rather than another emailed copy.
 
+**Customers can pay online.** Paste a payment link (Stripe, Square, PayPal — whatever you use) in Settings and a **Pay online** button appears on every unpaid invoice. Add your Stripe webhook signing secret and point the processor at `/api/webhooks/stripe`, and payments record themselves against the right invoice — signature-verified, timestamp-checked, and de-duplicated so a replayed webhook can't double-credit anyone.
+
+**Cash flow forecast.** Thirteen weeks of projected balance built from commitments already in the system: unpaid invoices at their due dates (overdue counted in week one), crew hours already on the schedule at their pay rates, and purchase orders in transit. It names the week you run short and what is driving it, and tells you how much delivered-but-unbilled work you could invoice to cover it.
+
+**Quotes and change orders are frozen when sent.** The customer's link always shows the document they were actually sent, even if the office edits the record afterwards — and their signature is recorded against that specific revision. Edited-since-sent is flagged in the office list, and re-sending cuts a new revision rather than quietly rewriting history.
+
 ## The parts that keep the field working
 
 **Photos and voice from the job site.** Crew attach photos to any job card — the browser downscales them before upload so they go through on bad signal — and can dictate the work performed and problem notes instead of typing with gloves on. Photos appear on the job card in the office and on the job's detail page.
@@ -64,6 +70,24 @@ Dashboard KPIs and a six-month revenue/profit chart · crew schedule grid · PIN
 Before anything actually sends, fill in **Settings → Email Delivery** with your provider's SMTP details (Gmail/Workspace: `smtp.gmail.com`, port 587, STARTTLS, using an [app password](https://support.google.com/accounts/answer/185833)). Set *Public site address* to an address customers can reach so links work from outside your office.
 
 Until SMTP is configured, sending writes a **full preview of the email to `data/outbox/`** and links it from Sent Proposals — so you can see exactly what a customer would receive without sending anything.
+
+## Your data
+
+**Backups run themselves.** A consistent snapshot (SQLite `VACUUM INTO`, safe on a live database) is written on startup and once a day, keeping the newest 14. Settings lists them with download links.
+
+**To restore:** stop the server, replace `data/dts.db` with a downloaded snapshot, start it again.
+
+**To get everything out:** Settings → *Export everything (JSON)* dumps all 22 tables, or grab any single table as CSV. Password hashes and SMTP/webhook secrets are stripped from exports.
+
+Everything lives under `data/` — the database, uploaded photos, backups, and the email outbox. Copy that folder and you have the whole company.
+
+## Tests
+
+```bash
+npm test
+```
+
+23 tests over `lib/finance.js` — the module every invoice, job margin and paycheck goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding.
 
 ## Security notes
 

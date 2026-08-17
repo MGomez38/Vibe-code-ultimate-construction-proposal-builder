@@ -370,8 +370,14 @@ function invoiceBody({ inv, job, client, company, totals, items, payments = [] }
 
       ${totals.retainage ? `<div style="margin-top:14px;font-size:12px;color:#8496aa;line-height:1.6">Retainage of ${money(totals.retainage)} is held per contract and billed at project closeout.</div>` : ''}
       ${inv.notes ? `<div style="margin-top:14px;padding-top:14px;border-top:1px solid #e6eaef;font-size:12.5px;color:#47586c;line-height:1.6">${esc(inv.notes)}</div>` : ''}
+      ${totals.balance > 0 && company.payment_link_url ? `
+        <table role="presentation" width="100%" style="margin-top:20px"><tr><td align="center">
+          <a href="${esc(company.payment_link_url)}" style="display:inline-block;background:#2e9e6b;color:#ffffff;font-weight:800;font-size:16px;text-decoration:none;padding:15px 38px;border-radius:10px">Pay ${money(totals.balance)} Online</a>
+          <div style="font-size:12px;color:#8496aa;margin-top:9px">Reference invoice ${esc(inv.invoice_number)} with your payment</div>
+        </td></tr></table>` : ''}
       <div style="margin-top:18px;padding:13px 15px;background:#f4f5f2;border-radius:8px;font-size:12.5px;color:#47586c;line-height:1.6">
         <b style="color:#131c26">Remit to:</b> ${esc(company.company_name)}${company.company_address ? ' · ' + esc(company.company_address) : ''}<br>
+        ${company.payment_instructions ? esc(company.payment_instructions) + '<br>' : ''}
         Questions about this invoice? ${esc(company.company_phone || '')} · ${esc(company.company_email || '')}
       </div>
     </td></tr>

@@ -20,6 +20,7 @@ const db = require('./db');
 const { makeAuth, hashPassword, verifyPassword } = require('./auth');
 const { sendMail, OUTBOX } = require('./mailer');
 const { readUpload, storeFile, removeFile, UPLOAD_DIR } = require('./lib/uploads');
+const backup = require('./lib/backup');
 const T = require('./templates');
 
 const PORT = process.env.PORT || 3000;
@@ -87,17 +88,59 @@ function attachmentsFor(entityType, entityId) {
   return db.prepare('SELECT id, filename, original_name, mime, size, caption, created_at FROM attachments WHERE entity_type = ? AND entity_id = ? ORDER BY id').all(entityType, entityId);
 }
 
-function quoteContext(q) {
+// ---------------------------------------------------------------- document versioning
+/**
+ * What the customer was actually sent, frozen at send time.
+ * Editing a quote afterwards must not change the document they are reading —
+ * or the signature they leave against it. Re-sending cuts a new revision.
+ */
+const SNAPSHOT_FIELDS = ['title', 'description', 'reason', 'labor_hours', 'labor_rate',
+  'markup_pct', 'tax_pct', 'schedule_days', 'valid_until'];
+
+function snapshotOf(doc) {
+  const snap = { revision: Number(doc.revision) || 1, frozen_at: now(), items: parseItems(doc.items) };
+  for (const f of SNAPSHOT_FIELDS) if (doc[f] !== undefined) snap[f] = doc[f];
+  return JSON.stringify(snap);
+}
+
+/** True when the live record no longer matches what was sent. */
+function hasDrift(doc) {
+  if (!doc.sent_snapshot) return false;
+  try {
+    const sent = JSON.parse(doc.sent_snapshot);
+    if (JSON.stringify(sent.items) !== JSON.stringify(parseItems(doc.items))) return true;
+    return SNAPSHOT_FIELDS.some(f => doc[f] !== undefined && String(sent[f] ?? '') !== String(doc[f] ?? ''));
+  } catch { return false; }
+}
+
+/** The document as the customer sees it: the frozen copy when one exists. */
+function frozenView(doc) {
+  if (!doc.sent_snapshot) return doc;
+  try { return { ...doc, ...JSON.parse(doc.sent_snapshot) }; } catch { return doc; }
+}
+
+/** Freeze a document for sending, cutting a new revision if it changed since last time. */
+function freezeForSend(table, doc) {
+  if (doc.sent_snapshot && hasDrift(doc)) doc.revision = (Number(doc.revision) || 1) + 1;
+  doc.sent_snapshot = snapshotOf(doc);
+  db.prepare(`UPDATE ${table} SET sent_snapshot = ?, revision = ? WHERE id = ?`)
+    .run(doc.sent_snapshot, doc.revision || 1, doc.id);
+  return doc;
+}
+
+function quoteContext(q, { asSent = false } = {}) {
+  const view = asSent ? frozenView(q) : q;
   return {
-    quote: q, client: q.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(q.client_id) : null,
-    company: settings(), totals: docTotals(q), items: parseItems(q.items),
+    quote: view, client: q.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(q.client_id) : null,
+    company: settings(), totals: docTotals(view), items: parseItems(view.items),
   };
 }
-function coContext(co) {
+function coContext(co, { asSent = false } = {}) {
+  const view = asSent ? frozenView(co) : co;
   return {
-    co, job: db.prepare('SELECT * FROM jobs WHERE id = ?').get(co.job_id),
+    co: view, job: db.prepare('SELECT * FROM jobs WHERE id = ?').get(co.job_id),
     client: co.client_id ? db.prepare('SELECT * FROM clients WHERE id = ?').get(co.client_id) : null,
-    company: settings(), totals: docTotals(co), items: parseItems(co.items),
+    company: settings(), totals: docTotals(view), items: parseItems(view.items),
   };
 }
 function invContext(inv) {
@@ -180,12 +223,14 @@ function publicRoutes(req, res, urlPath, body) {
     if (!q) return notFoundDoc(res, 'Proposal');
     if (action === 'respond' && req.method === 'POST') {
       const decision = body.decision === 'accepted' ? 'accepted' : 'declined';
-      db.prepare(`UPDATE quotes SET status = ?, responded_at = ?, client_signature = ?, updated_at = ? WHERE id = ?`)
-        .run(decision, now(), String(body.signature || '').slice(0, 120), now(), q.id);
-      auth.audit(null, 'quote_' + decision, `${q.quote_number} by client${body.signature ? ` (${body.signature})` : ''}`);
-      return html(res, 200, T.quotePage(quoteContext(db.prepare('SELECT * FROM quotes WHERE id = ?').get(q.id)), { token: tok, responded: decision }));
+      // record which revision they actually signed, not whatever the office edited since
+      db.prepare(`UPDATE quotes SET status = ?, responded_at = ?, client_signature = ?, approved_revision = ?, updated_at = ? WHERE id = ?`)
+        .run(decision, now(), String(body.signature || '').slice(0, 120), frozenView(q).revision || 1, now(), q.id);
+      auth.audit(null, 'quote_' + decision, `${q.quote_number} rev ${frozenView(q).revision || 1} by client${body.signature ? ` (${body.signature})` : ''}`);
+      const fresh = db.prepare('SELECT * FROM quotes WHERE id = ?').get(q.id);
+      return html(res, 200, T.quotePage(quoteContext(fresh, { asSent: true }), { token: tok, responded: decision }));
     }
-    return html(res, 200, T.quotePage(quoteContext(q), { token: tok }));
+    return html(res, 200, T.quotePage(quoteContext(q, { asSent: true }), { token: tok }));
   }
 
   if (kind === 'co') {
@@ -193,17 +238,18 @@ function publicRoutes(req, res, urlPath, body) {
     if (!co) return notFoundDoc(res, 'Change order');
     if (action === 'respond' && req.method === 'POST') {
       const decision = body.decision === 'approved' ? 'approved' : 'declined';
-      db.prepare(`UPDATE change_orders SET status = ?, responded_at = ?, client_signature = ? WHERE id = ?`)
-        .run(decision, now(), String(body.signature || '').slice(0, 120), co.id);
+      db.prepare(`UPDATE change_orders SET status = ?, responded_at = ?, client_signature = ?, approved_revision = ? WHERE id = ?`)
+        .run(decision, now(), String(body.signature || '').slice(0, 120), frozenView(co).revision || 1, co.id);
       // an approved change order extends the schedule as well as the contract
       if (decision === 'approved' && Number(co.schedule_days)) {
         const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(co.job_id);
         if (job && job.end_date) db.prepare('UPDATE jobs SET end_date = ? WHERE id = ?').run(addDays(job.end_date, Number(co.schedule_days)), job.id);
       }
       auth.audit(null, 'change_order_' + decision, `${co.co_number} by client${body.signature ? ` (${body.signature})` : ''}`);
-      return html(res, 200, T.changeOrderPage(coContext(db.prepare('SELECT * FROM change_orders WHERE id = ?').get(co.id)), { token: tok, responded: decision }));
+      const freshCo = db.prepare('SELECT * FROM change_orders WHERE id = ?').get(co.id);
+      return html(res, 200, T.changeOrderPage(coContext(freshCo, { asSent: true }), { token: tok, responded: decision }));
     }
-    return html(res, 200, T.changeOrderPage(coContext(co), { token: tok }));
+    return html(res, 200, T.changeOrderPage(coContext(co, { asSent: true }), { token: tok }));
   }
 
   if (kind === 'inv') {
@@ -215,6 +261,85 @@ function publicRoutes(req, res, urlPath, body) {
 }
 function notFoundDoc(res, what) {
   return html(res, 404, `<body style="font-family:system-ui;padding:60px;text-align:center"><h2>${what} not found</h2><p>This link may have expired. Please contact us for a new copy.</p></body>`);
+}
+
+// ---------------------------------------------------------------- payment webhook
+function readRaw(req) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', c => { raw += c; if (raw.length > 1e6) req.destroy(); });
+    req.on('end', () => resolve(raw));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Verify a Stripe webhook signature.
+ * Header looks like: t=1699999999,v1=<hex hmac>[,v1=<older hex>]
+ * The signed payload is `${t}.${rawBody}`, HMAC-SHA256 with the endpoint secret.
+ */
+function verifyStripeSignature(rawBody, header, secret, toleranceSec = 300) {
+  if (!secret) return { ok: false, error: 'No webhook secret configured' };
+  const parts = Object.create(null);
+  const v1 = [];
+  for (const piece of String(header || '').split(',')) {
+    const i = piece.indexOf('=');
+    if (i < 0) continue;
+    const k = piece.slice(0, i).trim(), v = piece.slice(i + 1).trim();
+    if (k === 'v1') v1.push(v); else parts[k] = v;
+  }
+  if (!parts.t || !v1.length) return { ok: false, error: 'Malformed signature header' };
+  const age = Math.abs(Date.now() / 1000 - Number(parts.t));
+  if (!Number.isFinite(age) || age > toleranceSec) return { ok: false, error: 'Signature timestamp outside tolerance' };
+  const expected = crypto.createHmac('sha256', secret).update(`${parts.t}.${rawBody}`, 'utf8').digest();
+  const match = v1.some(sig => {
+    const given = Buffer.from(sig, 'hex');
+    return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  });
+  return match ? { ok: true } : { ok: false, error: 'Signature mismatch' };
+}
+
+/** Record a payment sent by the processor, matched to an invoice and de-duplicated. */
+function applyWebhookPayment({ externalId, amount, reference, invoiceNumber, invoiceId, method = 'card' }) {
+  if (!(amount > 0)) return { skipped: 'no amount' };
+  if (externalId && db.prepare('SELECT id FROM payments WHERE external_id = ?').get(externalId)) return { skipped: 'already recorded' };
+  const inv = invoiceId ? db.prepare('SELECT * FROM invoices WHERE id = ?').get(invoiceId)
+    : invoiceNumber ? db.prepare('SELECT * FROM invoices WHERE invoice_number = ?').get(invoiceNumber) : null;
+  if (!inv) return { skipped: `no invoice matched (${invoiceNumber || invoiceId || 'none supplied'})` };
+  db.prepare('INSERT INTO payments (invoice_id, amount, method, reference, received_on, notes, external_id) VALUES (?,?,?,?,?,?,?)')
+    .run(inv.id, round2(amount), method, reference || '', today(), 'Recorded automatically from payment processor', externalId || '');
+  const t = invoiceTotals(inv, paidOn(inv.id));
+  if (t.balance <= 0.005) db.prepare(`UPDATE invoices SET status = 'paid' WHERE id = ?`).run(inv.id);
+  else if (inv.status === 'draft') db.prepare(`UPDATE invoices SET status = 'sent' WHERE id = ?`).run(inv.id);
+  auth.audit(null, 'payment_webhook', `${T.money(amount)} on ${inv.invoice_number} (${externalId || 'no id'})`);
+  return { ok: true, invoice: inv.invoice_number, balance: t.balance };
+}
+
+async function stripeWebhook(req, res) {
+  const raw = await readRaw(req);
+  const cfg = settings();
+  const check = verifyStripeSignature(raw, req.headers['stripe-signature'], cfg.stripe_webhook_secret);
+  if (!check.ok) {
+    auth.audit(null, 'payment_webhook_rejected', check.error);
+    return json(res, 400, { error: check.error });
+  }
+  let event;
+  try { event = JSON.parse(raw); } catch { return json(res, 400, { error: 'Invalid JSON' }); }
+
+  const obj = event?.data?.object || {};
+  const meta = obj.metadata || {};
+  // Stripe reports money in the smallest currency unit
+  const amount = (obj.amount_received ?? obj.amount_total ?? obj.amount_paid ?? obj.amount ?? 0) / 100;
+  let result = { skipped: `unhandled event ${event?.type}` };
+  if (['checkout.session.completed', 'payment_intent.succeeded', 'charge.succeeded'].includes(event?.type)) {
+    result = applyWebhookPayment({
+      externalId: obj.id, amount,
+      reference: obj.payment_intent || obj.id || '',
+      invoiceNumber: meta.invoice_number || obj.client_reference_id || null,
+      invoiceId: meta.invoice_id ? Number(meta.invoice_id) : null,
+    });
+  }
+  return json(res, 200, { received: true, ...result });
 }
 
 // ---------------------------------------------------------------- crew portal API
@@ -513,6 +638,76 @@ function capacity(weeks = 4) {
   return out;
 }
 
+// ---------------------------------------------------------------- cash flow forecast
+/**
+ * Project cash in and out, week by week, from commitments already in the system:
+ * unpaid invoices by due date, scheduled crew hours, and purchase orders in transit.
+ * Anything already overdue lands in week one — that money is needed now.
+ */
+function cashflow(weeks = 13) {
+  const cfg = settings();
+  const shiftHours = s => (s === 'AM' || s === 'PM') ? 4 : 8;
+  const start = new Date(); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const weekStarts = [...Array(weeks)].map((_, i) => {
+    const d = new Date(start); d.setDate(d.getDate() + i * 7); return d.toISOString().slice(0, 10);
+  });
+  const bucketFor = date => {
+    if (!date) return null;
+    if (date < weekStarts[0]) return 0;                       // overdue / already committed
+    for (let i = weeks - 1; i >= 0; i--) if (date >= weekStarts[i]) return i;
+    return null;
+  };
+
+  const rows = weekStarts.map(w => ({ week_start: w, inflow: 0, outflow: 0, inflows: [], outflows: [] }));
+  const addIn = (i, amount, label) => { if (i !== null && rows[i]) { rows[i].inflow = round2(rows[i].inflow + amount); rows[i].inflows.push({ label, amount: round2(amount) }); } };
+  const addOut = (i, amount, label) => { if (i !== null && rows[i]) { rows[i].outflow = round2(rows[i].outflow + amount); rows[i].outflows.push({ label, amount: round2(amount) }); } };
+
+  // in: unpaid invoices, by due date
+  for (const inv of db.prepare(`SELECT i.*, c.name AS client_name FROM invoices i
+      LEFT JOIN clients c ON c.id = i.client_id WHERE i.status NOT IN ('void','paid')`).all()) {
+    const t = invoiceTotals(inv, paidOn(inv.id));
+    if (t.balance <= 0.005) continue;
+    const due = inv.due_date || inv.issue_date || today();
+    addIn(bucketFor(due), t.balance, `${inv.invoice_number}${inv.client_name ? ' · ' + inv.client_name : ''}${due < today() ? ' (overdue)' : ''}`);
+  }
+
+  // out: payroll from the schedule, at each employee's rate
+  const sched = db.prepare(`SELECT s.date, s.shift, e.hourly_rate, e.name FROM schedule s
+    JOIN employees e ON e.id = s.employee_id WHERE s.date >= ?`).all(weekStarts[0]);
+  const payrollByWeek = {};
+  for (const s of sched) {
+    const i = bucketFor(s.date);
+    if (i === null) continue;
+    payrollByWeek[i] = (payrollByWeek[i] || 0) + shiftHours(s.shift) * (s.hourly_rate || 0);
+  }
+  for (const [i, amount] of Object.entries(payrollByWeek)) addOut(Number(i), amount, 'Payroll (scheduled crew)');
+
+  // out: purchase orders in transit, by expected date
+  for (const po of db.prepare(`SELECT * FROM purchase_orders WHERE status = 'ordered'`).all()) {
+    const total = parseItems(po.items).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_cost) || 0), 0);
+    if (total <= 0) continue;
+    addOut(bucketFor(po.expected_date || today()), total, `${po.po_number} · ${po.vendor}`);
+  }
+
+  let balance = Number(cfg.cash_on_hand) || 0;
+  const opening = balance;
+  for (const r of rows) {
+    r.net = round2(r.inflow - r.outflow);
+    balance = round2(balance + r.net);
+    r.balance = balance;
+    r.short = balance < 0;
+  }
+  const firstShort = rows.find(r => r.short);
+  return {
+    weeks: rows, opening_balance: opening, closing_balance: balance,
+    total_in: round2(rows.reduce((s, r) => s + r.inflow, 0)),
+    total_out: round2(rows.reduce((s, r) => s + r.outflow, 0)),
+    first_shortfall: firstShort ? firstShort.week_start : null,
+    unbilled: round2(db.prepare(`SELECT id FROM jobs WHERE status IN ('planned','in_progress','on_hold')`).all()
+      .reduce((s, j) => { const f = jobFinancials(j.id); return s + Math.max(0, f.sold_price - f.invoicing.billed); }, 0)),
+  };
+}
+
 // ---------------------------------------------------------------- payroll
 function payrollPeriod(from, to) {
   const employees = db.prepare('SELECT * FROM employees WHERE active = 1 ORDER BY name').all();
@@ -676,7 +871,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const to = String(body.to || client?.email || '').trim();
     if (!validEmail(to)) return json(res, 400, { error: 'A valid recipient email address is required' });
     const cfg = settings();
-    const ctx = quoteContext(q);
+    freezeForSend('quotes', q);
+    const ctx = quoteContext(q, { asSent: true });
     const subject = body.subject || `${cfg.company_name} — Proposal ${q.quote_number}: ${q.title}`;
     const message = body.message !== undefined ? body.message
       : `Hi${client?.contact ? ' ' + client.contact.split(' ')[0] : ''},\n\nThanks for the opportunity to quote this work. Our proposal is below.\n\n${cfg.company_name}`;
@@ -692,7 +888,7 @@ async function adminApi(req, res, parts, body, query, user, url) {
   if (resource === 'quotes' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT q.*, c.name AS client_name, c.email AS client_email, c.contact AS client_contact
       FROM quotes q LEFT JOIN clients c ON c.id = q.client_id ORDER BY q.id DESC`).all();
-    rows.forEach(r => { r.totals = docTotals(r); });
+    rows.forEach(r => { r.totals = docTotals(r); r.has_drift = hasDrift(r); });
     return json(res, 200, rows);
   }
 
@@ -700,7 +896,7 @@ async function adminApi(req, res, parts, body, query, user, url) {
   if (resource === 'changeorders' && method === 'GET' && !idOrAction) {
     const rows = db.prepare(`SELECT co.*, j.job_number, j.title AS job_title, c.name AS client_name, c.email AS client_email, c.contact AS client_contact
       FROM change_orders co LEFT JOIN jobs j ON j.id = co.job_id LEFT JOIN clients c ON c.id = co.client_id ORDER BY co.id DESC`).all();
-    rows.forEach(r => { r.totals = docTotals(r); });
+    rows.forEach(r => { r.totals = docTotals(r); r.has_drift = hasDrift(r); });
     return json(res, 200, rows);
   }
   if (resource === 'changeorders' && idOrAction && (action === 'email' || action === 'link') && method === 'POST') {
@@ -714,7 +910,8 @@ async function adminApi(req, res, parts, body, query, user, url) {
     const to = String(body.to || client?.email || '').trim();
     if (!validEmail(to)) return json(res, 400, { error: 'A valid recipient email address is required' });
     const cfg = settings();
-    const ctx = coContext(co);
+    freezeForSend('change_orders', co);
+    const ctx = coContext(co, { asSent: true });
     const subject = body.subject || `${cfg.company_name} — Change Order ${co.co_number}: ${co.title}`;
     const message = body.message !== undefined ? body.message
       : `Hi${client?.contact ? ' ' + client.contact.split(' ')[0] : ''},\n\nWe ran into work outside the original scope and need your approval before proceeding. Details are below.\n\n${cfg.company_name}`;
@@ -955,6 +1152,11 @@ async function adminApi(req, res, parts, body, query, user, url) {
   // ---- capacity ----
   if (resource === 'capacity' && method === 'GET') {
     return json(res, 200, capacity(Number(query.get('weeks')) || 4));
+  }
+
+  // ---- cash flow ----
+  if (resource === 'cashflow' && method === 'GET') {
+    return json(res, 200, cashflow(Math.min(26, Number(query.get('weeks')) || 13)));
   }
 
   // ---- payroll ----
@@ -1268,6 +1470,90 @@ async function adminApi(req, res, parts, body, query, user, url) {
       return json(res, 200, { ok: true });
     }
   }
+  // ---- backups & export ----
+  if (resource === 'backups') {
+    if (method === 'GET' && !idOrAction) return json(res, 200, { backups: backup.list(), keep: backup.KEEP });
+    if (method === 'POST' && !idOrAction) {
+      const b = backup.snapshot(db, 'manual');
+      auth.audit(user, 'backup_created', b.filename);
+      return json(res, 200, { ok: true, ...b, message: `Backup written (${Math.round(b.size / 1024)} KB)` });
+    }
+    if (method === 'GET' && idOrAction) {
+      const file = path.join(backup.BACKUP_DIR, path.basename(decodeURIComponent(idOrAction)));
+      if (!file.startsWith(backup.BACKUP_DIR) || !fs.existsSync(file)) return json(res, 404, { error: 'Backup not found' });
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${path.basename(file)}"` });
+      return fs.createReadStream(file).pipe(res);
+    }
+    if (method === 'DELETE' && idOrAction) {
+      const file = path.join(backup.BACKUP_DIR, path.basename(decodeURIComponent(idOrAction)));
+      if (file.startsWith(backup.BACKUP_DIR) && fs.existsSync(file)) fs.unlinkSync(file);
+      return json(res, 200, { ok: true });
+    }
+  }
+  if (resource === 'export' && method === 'GET') {
+    const what = idOrAction || 'json';
+    if (what === 'json') {
+      auth.audit(user, 'data_exported', 'full json');
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="dts-export-${today()}.json"` });
+      return res.end(JSON.stringify(backup.exportJson(db), null, 2));
+    }
+    const table = what.replace(/\.csv$/, '');
+    try {
+      const csv = backup.exportCsv(db, table);
+      return text(res, 200, csv, { 'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${table}-${today()}.csv"` });
+    } catch (e) { return json(res, 400, { error: e.message }); }
+  }
+
+  // ---- time entry corrections ----
+  if (resource === 'timeentries') {
+    const validate = b => {
+      if (!b.clock_in) return 'A clock-in time is required';
+      const inT = new Date(b.clock_in);
+      if (!Number.isFinite(inT.getTime())) return 'Clock-in is not a valid time';
+      if (b.clock_out) {
+        const outT = new Date(b.clock_out);
+        if (!Number.isFinite(outT.getTime())) return 'Clock-out is not a valid time';
+        if (outT <= inT) return 'Clock-out must be after clock-in';
+        if ((outT - inT) / 3600e3 > 24) return 'That shift is longer than 24 hours — check the dates';
+      }
+      return null;
+    };
+    const norm = v => v ? String(v).replace('T', ' ').slice(0, 19) : null;
+
+    if (method === 'POST') {
+      const err = validate(body);
+      if (err) return json(res, 400, { error: err });
+      if (!db.prepare('SELECT id FROM employees WHERE id = ?').get(body.employee_id)) return json(res, 400, { error: 'Unknown employee' });
+      const info = db.prepare(`INSERT INTO time_entries (employee_id, job_id, entry_type, clock_in, clock_out, notes)
+        VALUES (?,?,?,?,?,?)`).run(body.employee_id, body.job_id || null, body.job_id ? 'job' : 'shift',
+        norm(body.clock_in), norm(body.clock_out), body.notes || '');
+      auth.audit(user, 'time_entry_added', `employee ${body.employee_id} ${norm(body.clock_in)}`);
+      return json(res, 200, { ok: true, id: info.lastInsertRowid });
+    }
+    if (method === 'PUT' && idOrAction) {
+      const entry = db.prepare('SELECT * FROM time_entries WHERE id = ?').get(idOrAction);
+      if (!entry) return json(res, 404, { error: 'Time entry not found' });
+      const merged = { ...entry, ...body };
+      const err = validate(merged);
+      if (err) return json(res, 400, { error: err });
+      db.prepare(`UPDATE time_entries SET employee_id = ?, job_id = ?, entry_type = ?, clock_in = ?, clock_out = ?, notes = ? WHERE id = ?`)
+        .run(merged.employee_id, merged.job_id || null, merged.job_id ? 'job' : 'shift',
+          norm(merged.clock_in), norm(merged.clock_out), merged.notes || '', entry.id);
+      auth.audit(user, 'time_entry_edited',
+        `#${entry.id}: ${entry.clock_in}–${entry.clock_out || 'open'} → ${norm(merged.clock_in)}–${norm(merged.clock_out) || 'open'}`);
+      return json(res, 200, { ok: true });
+    }
+    if (method === 'DELETE' && idOrAction) {
+      const entry = db.prepare('SELECT t.*, e.name FROM time_entries t JOIN employees e ON e.id = t.employee_id WHERE t.id = ?').get(idOrAction);
+      if (!entry) return json(res, 404, { error: 'Time entry not found' });
+      db.prepare('DELETE FROM time_entries WHERE id = ?').run(entry.id);
+      auth.audit(user, 'time_entry_deleted', `${entry.name} ${entry.clock_in}`);
+      return json(res, 200, { ok: true });
+    }
+  }
+
   if (resource === 'emails' && method === 'GET') {
     return json(res, 200, db.prepare(`SELECT l.*, u.username AS sent_by_name FROM email_log l
       LEFT JOIN users u ON u.id = l.sent_by ORDER BY l.id DESC LIMIT 100`).all());
@@ -1312,6 +1598,10 @@ const server = http.createServer(async (req, res) => {
   const isUpload = (req.headers['content-type'] || '').includes('multipart/form-data');
 
   try {
+    // the payment webhook needs the raw body to verify its signature, so it runs
+    // before any parsing and authenticates on the signature rather than a session
+    if (urlPath === '/api/webhooks/stripe' && method === 'POST') return await stripeWebhook(req, res);
+
     const body = (!isUpload && (method === 'POST' || method === 'PUT')) ? await readBody(req) : {};
 
     // public customer documents
@@ -1396,5 +1686,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`\n  DTS Command Center → http://localhost:${PORT}`);
-  console.log(`  Office console: /   ·  Crew portal: /portal  ·  Sign in: /login\n`);
+  console.log(`  Office console: /   ·  Crew portal: /portal  ·  Sign in: /login`);
+  backup.schedule(db, m => console.log(`  ${m}`));
+  console.log('');
 });
