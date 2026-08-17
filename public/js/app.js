@@ -123,6 +123,69 @@ function renderEntitySwitch() {
     toast(b.dataset.co === 'group' ? 'Viewing the whole group' : `Switched to ${b.title || b.dataset.co}`, 'ok');
   };
 }
+// ---------------------------------------------------------------- ask-anything drawer
+/**
+ * Answers come from a snapshot of this entity's own books, taken at the
+ * moment you ask. Nothing is remembered between sessions and nothing goes
+ * out that the signed-in user could not already see on screen.
+ */
+const AID = { thread: [], loaded: false };
+const AID_STARTERS = [
+  'Which jobs are running below our target margin?',
+  'What is past due and who owes it?',
+  'Where is my labor estimate furthest off?',
+  'What should I order this week?',
+];
+
+function aidRender() {
+  $('#aid-log').innerHTML = AID.thread.length
+    ? AID.thread.map(m => `<div class="aid-msg ${m.role}">${m.role === 'assistant' ? m.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>') : esc(m.content)}</div>`).join('')
+      + (AID.busy ? '<div class="aid-msg assistant thinking">Reading your books…</div>' : '')
+    : `<div class="aid-empty">
+        <p>Ask anything about the work in front of you. Every answer is pulled from <b>${esc(ME?.scope?.active?.name || 'your books')}</b> as they stand right now.</p>
+        ${AID_STARTERS.map(s => `<button class="aid-starter">${esc(s)}</button>`).join('')}
+      </div>`;
+  $('#aid-log').scrollTop = $('#aid-log').scrollHeight;
+}
+
+async function aidAsk(question) {
+  if (!question.trim() || AID.busy) return;
+  AID.thread.push({ role: 'user', content: question });
+  AID.busy = true; aidRender();
+  try {
+    const r = await api('ai/ask', 'POST', { question, thread: AID.thread.slice(0, -1) });
+    AID.thread.push({ role: 'assistant', content: r.answer || r.message || 'No answer came back.' });
+  } catch (e) {
+    AID.thread.push({ role: 'assistant', content: `Could not reach the assistant: ${e.message}` });
+  }
+  AID.busy = false; aidRender();
+}
+
+$('#ai-open').onclick = async () => {
+  $('#ai-drawer').classList.add('open');
+  if (!AID.loaded) {
+    AID.loaded = true;
+    aidRender();
+    try {
+      const s = await api('ai/status');
+      $('#aid-mode').textContent = s.mode === 'model' ? s.model : 'needs an API key — Settings → AI Assistant';
+      $('#aid-mode').className = 'ai-mode ' + (s.mode === 'model' ? 'live' : 'local');
+    } catch { /* the drawer still opens */ }
+  }
+  $('#aid-input').focus();
+};
+$('#aid-close').onclick = () => $('#ai-drawer').classList.remove('open');
+$('#aid-send').onclick = () => { const v = $('#aid-input').value; $('#aid-input').value = ''; aidAsk(v); };
+$('#aid-input').onkeydown = e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#aid-send').click(); }
+};
+$('#aid-log').onclick = e => {
+  if (e.target.classList.contains('aid-starter')) aidAsk(e.target.textContent);
+};
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') $('#ai-drawer').classList.remove('open');
+});
+
 $('#user-chip').onclick = e => { e.stopPropagation(); $('#user-drop').classList.toggle('open'); };
 document.addEventListener('click', () => $('#user-drop').classList.remove('open'));
 $('#menu-logout').onclick = async () => { await fetch('/api/auth/logout', { method: 'POST' }); location.href = '/login'; };
@@ -736,6 +799,25 @@ Happy to walk through any line item.</textarea></label>
           <label class="fld">Pull from inventory<select id="q-mat"><option value="">— pick a material —</option>
             ${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${money(m.sell_price)}/${esc(m.unit)})</option>`).join('')}</select></label>
         </form>
+        <div class="aibox" id="aibox">
+          <div class="aibox-head">
+            <h3><span class="ai-spark">✦</span> Draft this quote for me</h3>
+            <span class="ai-mode" id="ai-mode">checking…</span>
+          </div>
+          <p class="ai-sub">Describe the work the way you would say it out loud. Every price comes from your own history and material list — anything new comes back blank on purpose.</p>
+          <textarea id="ai-desc" rows="4" placeholder="e.g. Frame a 20x30 storage room in the warehouse.
+120 2x4 studs 8ft
+14 sheets of 5/8 drywall
+2 pails interior paint
+24 hours framing and hanging"></textarea>
+          <div class="ai-acts">
+            <button class="btn primary sm" id="ai-go">✦ Draft line items</button>
+            <button class="btn ghost sm" id="ai-from-scope">Use the scope box above</button>
+            <button class="btn ghost sm" id="ai-polish" title="Rewrite the scope description so it can go in front of a customer">Tidy up the scope wording</button>
+          </div>
+          <div id="ai-out"></div>
+        </div>
+
         <h3 style="margin:16px 0 4px;font-size:13px">Line items</h3>
         <div id="q-items"></div>
         <div class="quote-summary" id="q-summary"></div>
@@ -800,6 +882,117 @@ Happy to walk through any line item.</textarea></label>
           <div class="est-warn ${esc(w.level)}"><h5>${esc(w.title)}</h5><p>${esc(w.detail)}</p></div>`).join('');
       } catch { box.innerHTML = ''; }
     }
+
+    // ---- AI drafting ----
+    let drafted = [];
+    api('ai/status').then(s => {
+      const el = $('#ai-mode'); if (!el) return;
+      el.textContent = s.mode === 'model'
+        ? `${esc(s.model)} · grounded in ${s.catalog_size} of your priced items`
+        : `Reading your own ${s.catalog_size} priced items`;
+      el.className = 'ai-mode ' + (s.mode === 'model' ? 'live' : 'local');
+      if (s.mode !== 'model') {
+        const p = $('#ai-polish'); if (p) { p.disabled = true; p.title = 'Needs an API key — Settings → AI Assistant'; }
+      }
+    }).catch(() => {});
+
+    async function runDraft() {
+      const desc = $('#ai-desc').value.trim();
+      if (desc.length < 4) return toast('Describe the work first', 'err');
+      const btn = $('#ai-go'); btn.disabled = true; btn.textContent = 'Reading your scope…';
+      $('#ai-out').innerHTML = '<div class="ai-thinking">Matching each line against your price history…</div>';
+      try {
+        const f = formData($('#q-form'));
+        const d = await api('ai/draft', 'POST', { description: desc, title: f.title, client_id: f.client_id });
+        drafted = d.items || [];
+        renderDraft(d);
+      } catch (e) {
+        $('#ai-out').innerHTML = `<div class="est-warn high"><h5>Could not draft that</h5><p>${esc(e.message)}</p></div>`;
+      } finally { btn.disabled = false; btn.innerHTML = '✦ Draft line items'; }
+    }
+
+    function renderDraft(d) {
+      if (d.note) return void ($('#ai-out').innerHTML = `<div class="est-warn medium"><h5>Nothing to price from yet</h5><p>${esc(d.note)}</p></div>`);
+      if (!drafted.length) return void ($('#ai-out').innerHTML = '<div class="empty" style="padding:14px">Could not pull any line items out of that. Try one item per line.</div>');
+      const priced = drafted.filter(i => i.unit_price > 0);
+      const value = drafted.reduce((s, i) => s + i.qty * i.unit_price, 0);
+      $('#ai-out').innerHTML = `
+        ${d.fallback_reason ? `<div class="est-warn medium"><h5>Drafted from your history instead</h5><p>The model could not be reached (${esc(d.fallback_reason)}), so these lines were matched locally against your own pricing.</p></div>` : ''}
+        <div class="ai-summary">
+          <b>${drafted.length}</b> line${drafted.length === 1 ? '' : 's'} ·
+          <b>${priced.length}</b> priced from your history ·
+          <b>${drafted.length - priced.length}</b> need${drafted.length - priced.length === 1 ? 's' : ''} a price ·
+          worth <b>${money(value)}</b> before labor
+        </div>
+        <table class="ai-lines"><tbody>
+          ${drafted.map((i, n) => `<tr data-n="${n}" class="${i.unit_price > 0 ? '' : 'unpriced'}">
+            <td class="pick"><input type="checkbox" checked data-pick="${n}"></td>
+            <td>
+              <div class="al-desc">${esc(i.desc)} <span class="al-src s-${esc(i.source)}">${i.source === 'catalog' ? 'in stock' : i.source === 'history' ? 'your price' : 'needs price'}</span></div>
+              <div class="al-why">${esc(i.why)}</div>
+            </td>
+            <td class="num mono">${i.qty} ${esc(i.unit)}</td>
+            <td class="num mono"><b>${i.unit_price > 0 ? money(i.unit_price) : '—'}</b></td>
+          </tr>`).join('')}
+        </tbody></table>
+        ${d.labor_hours ? `<label class="ai-labor"><input type="checkbox" id="ai-take-labor" checked>
+          Set labor to <b>${d.labor_hours} hrs</b> at ${money(d.labor_rate || 0)}/hr${d.labor_basis ? ` — ${esc(d.labor_basis)}` : ''}</label>` : ''}
+        ${d.scope_summary ? `<label class="ai-labor"><input type="checkbox" id="ai-take-scope">
+          Replace the scope description with the tightened-up version</label>
+          <div class="ai-scope">${esc(d.scope_summary)}</div>` : ''}
+        ${(d.assumptions || []).length ? `<div class="ai-notes"><h5>What it assumed</h5><ul>${d.assumptions.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>` : ''}
+        ${(d.questions || []).length ? `<div class="ai-notes q"><h5>Answer these before you send it</h5><ul>${d.questions.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>` : ''}
+        <div class="ai-acts">
+          <button class="btn primary sm" id="ai-add">Add the checked lines to this quote</button>
+          <button class="btn ghost sm" id="ai-clear">Discard</button>
+        </div>`;
+
+      $('#ai-add').onclick = () => {
+        const picks = [...document.querySelectorAll('[data-pick]')].filter(c => c.checked).map(c => +c.dataset.pick);
+        if (!picks.length) return toast('Nothing checked', 'err');
+        for (const n of picks) {
+          const i = drafted[n];
+          items.push({ desc: i.desc, qty: i.qty, unit: i.unit, unit_cost: i.unit_cost, unit_price: i.unit_price });
+        }
+        const takeLabor = $('#ai-take-labor');
+        if (takeLabor && takeLabor.checked && d.labor_hours) {
+          $('#q-form').labor_hours.value = d.labor_hours;
+          if (d.labor_rate) $('#q-form').labor_rate.value = d.labor_rate;
+        }
+        const takeScope = $('#ai-take-scope');
+        if (takeScope && takeScope.checked && d.scope_summary) $('#q-form').description.value = d.scope_summary;
+        const unpriced = picks.filter(n => !(drafted[n].unit_price > 0)).length;
+        $('#ai-out').innerHTML = '';
+        drafted = [];
+        redrawItems();
+        toast(`${picks.length} line${picks.length === 1 ? '' : 's'} added${unpriced ? ` — ${unpriced} still need${unpriced === 1 ? 's' : ''} a price` : ''}`, 'ok');
+      };
+      $('#ai-clear').onclick = () => { drafted = []; $('#ai-out').innerHTML = ''; };
+      $('#ai-out').onclick = ev => {
+        const tr = ev.target.closest('tr[data-n]');
+        if (!tr || ev.target.matches('input')) return;
+        const box = tr.querySelector('[data-pick]'); box.checked = !box.checked;
+      };
+    }
+
+    $('#ai-go').onclick = runDraft;
+    $('#ai-from-scope').onclick = () => {
+      const d = $('#q-form').description.value.trim();
+      if (!d) return toast('The scope description above is empty', 'err');
+      $('#ai-desc').value = d;
+      runDraft();
+    };
+    $('#ai-polish').onclick = async () => {
+      const box = $('#q-form').description;
+      if (!box.value.trim()) return toast('Write a rough scope first', 'err');
+      const btn = $('#ai-polish'); btn.disabled = true; btn.textContent = 'Rewriting…';
+      try {
+        const r = await api('ai/polish', 'POST', { text: box.value, kind: 'scope' });
+        if (r.mode === 'unavailable') toast('That needs an API key — Settings → AI Assistant', 'err');
+        else { box.value = r.text; toast('Scope rewritten — read it before you send it', 'ok'); }
+      } catch (e) { toast(e.message, 'err'); }
+      finally { btn.disabled = false; btn.textContent = 'Tidy up the scope wording'; }
+    };
 
     let estTimer;
     $('#est-q').oninput = e => {
@@ -2670,6 +2863,21 @@ PAGES.settings = async () => {
         </div>
 
         <div class="card">
+          <h3><span class="ai-spark">✦</span> AI Assistant <span class="hint" id="ai-set-mode">…</span></h3>
+          <div class="hr-note">Quote drafting works right now with no key — it reads your own price history and material list. Adding a key lets the assistant also <b>answer questions about your books</b> and <b>rewrite scope wording</b>, and it drafts longer scopes more cleanly. Prices always come from your catalog either way; a model is never allowed to invent one.</div>
+          <form id="set-ai" class="form-grid">
+            ${f('ai_api_key', 'API key', { type: 'password', full: true, placeholder: 'sk-ant-…' })}
+            ${f('ai_model', 'Model', { full: true, placeholder: 'claude-sonnet-5' })}
+            ${f('ai_base_url', 'API endpoint (leave blank unless self-hosting)', { full: true, placeholder: 'https://api.anthropic.com' })}
+            <label class="fld">Assistant<select name="ai_enabled">
+              <option value="1" ${s.ai_enabled === '0' ? '' : 'selected'}>On</option>
+              <option value="0" ${s.ai_enabled === '0' ? 'selected' : ''}>Off</option>
+            </select></label>
+          </form>
+          <p class="muted" style="font-size:12.5px;margin-top:10px">The key is stored on this server only and is never sent to the browser. Every draft and question is written to the audit log.</p>
+        </div>
+
+        <div class="card">
           <h3>Backups <span class="hint">automatic, daily</span></h3>
           <div id="backup-list"><div class="empty">Loading…</div></div>
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
@@ -2710,8 +2918,9 @@ PAGES.settings = async () => {
   $('#set-save').onclick = async () => {
     // company-specific fields go on the entity, shared plumbing stays global
     const perCompany = { ...formData($('#set-company')), ...formData($('#set-pricing')), ...formData($('#set-pay')) };
-    const global = { ...formData($('#set-mail')), ...formData($('#set-pay-global')) };
+    const global = { ...formData($('#set-mail')), ...formData($('#set-pay-global')), ...formData($('#set-ai')) };
     if (/^•+$/.test(String(global.smtp_pass))) delete global.smtp_pass;
+    if (/^•+$/.test(String(global.ai_api_key))) delete global.ai_api_key;
     delete global.mail_from;                        // mail_from is per entity
     await api('companies/' + editingId, 'PUT', perCompany);
     await api('settings', 'PUT', global);
@@ -2719,6 +2928,13 @@ PAGES.settings = async () => {
     $('#save-note').textContent = 'Saved ' + new Date().toLocaleTimeString();
     ME = await api('auth/me'); renderEntitySwitch();
   };
+
+  api('ai/status').then(a => {
+    const el = $('#ai-set-mode'); if (!el) return;
+    el.textContent = a.mode === 'model'
+      ? `live · ${a.model} · ${a.catalog_size} priced items`
+      : `no key — drafting from your ${a.catalog_size} priced items`;
+  }).catch(() => {});
 
   async function loadBackups() {
     const { backups } = await api('backups');

@@ -77,6 +77,7 @@
           <svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
           <input id="global-search" type="text" placeholder="Search jobs, work orders, quotes, items…">
         </div>
+        <button class="ai-btn" id="ai-open" title="Ask about your own numbers"><span class="ai-spark">✦</span> Ask</button>
         <div class="topbar-clock" id="topbar-clock"></div>
         <div class="usermenu">
           <button class="user-chip" id="user-chip"><span class="avatar" id="user-initials">—</span><span id="user-name">…</span></button>
@@ -91,6 +92,18 @@
     <main id="view" class="view"></main>
   </div>
 </div>
+
+<aside id="ai-drawer" class="ai-drawer">
+  <div class="aid-head">
+    <div><h2><span class="ai-spark">✦</span> Ask about your numbers</h2><span id="aid-mode" class="ai-mode">…</span></div>
+    <button class="modal-close" id="aid-close">×</button>
+  </div>
+  <div class="aid-log" id="aid-log"></div>
+  <div class="aid-foot">
+    <textarea id="aid-input" rows="2" placeholder="Which jobs are losing money?"></textarea>
+    <button class="btn primary" id="aid-send">Ask</button>
+  </div>
+</aside>
 
 <div id="modal-root"></div>
 <div id="toast-root"></div>

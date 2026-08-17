@@ -22,6 +22,7 @@ const { sendMail, OUTBOX } = require('./mailer');
 const { readUpload, storeFile, removeFile, UPLOAD_DIR } = require('./lib/uploads');
 const backup = require('./lib/backup');
 const nesting = require('./lib/nesting');
+const ai = require('./lib/ai');
 const T = require('./templates');
 
 const PORT = process.env.PORT || 3000;
@@ -912,6 +913,86 @@ function benchmark(draft, scope) {
   return { totals, target_margin_pct: target, labor_accuracy: accuracy, similar_jobs: similar.slice(0, 5), warnings };
 }
 
+// ---------------------------------------------------------------- AI grounding
+/**
+ * Everything the assistant is allowed to price from: this entity's own
+ * quoted history, collapsed to one row per distinct line, plus what is
+ * physically on the shelf. Nothing from outside the company gets in.
+ */
+function aiCatalog(scope) {
+  const W = SC.where(scope);
+  const byDesc = new Map();
+  for (const i of historicalItems(scope)) {
+    if (!i.desc || i.unit_price <= 0) continue;
+    const key = i.desc.toLowerCase().trim();
+    if (!byDesc.has(key)) byDesc.set(key, { desc: i.desc, unit: i.unit || 'ea', prices: [], costs: [], times: 0, last: '', last_on: '' });
+    const g = byDesc.get(key);
+    g.times++;
+    g.prices.push(i.unit_price);
+    if (i.unit_cost > 0) g.costs.push(i.unit_cost);
+    if ((i.date || '') >= g.last) { g.last = i.date || ''; g.last_on = i.number; }
+  }
+  const avg = a => a.length ? round2(a.reduce((s, x) => s + x, 0) / a.length) : 0;
+  const catalog = [...byDesc.values()].map(g => ({
+    desc: g.desc, unit: g.unit, source: 'history', times: g.times,
+    price: avg(g.prices), cost: avg(g.costs), last_on: g.last_on, last: g.last,
+  }));
+  for (const m of db.prepare(`SELECT * FROM materials WHERE ${W.sql}`).all(...W.params)) {
+    catalog.push({ desc: m.name, unit: m.unit || 'ea', source: 'catalog', times: 0,
+      price: round2(m.sell_price), cost: round2(m.unit_cost), qty_on_hand: m.qty_on_hand, sku: m.sku });
+  }
+  // most-quoted first, so a truncated prompt keeps the lines that matter
+  return catalog.sort((a, b) => b.times - a.times);
+}
+
+function aiContext(scope, { title = '', clientId = null } = {}) {
+  const cfg = companyOf(scope.activeId);
+  const accuracy = laborAccuracy(scope);
+  const client = clientId ? db.prepare('SELECT name FROM clients WHERE id = ?').get(clientId) : null;
+  const similar = title ? (benchmark({ title, items: '[]', company_id: scope.activeId }, scope).similar_jobs || []).slice(0, 4) : [];
+  return {
+    catalog: aiCatalog(scope),
+    company: { name: cfg.company_name || 'the company', trade: cfg.tagline || 'construction' },
+    labor_rate: Number(cfg.default_labor_rate || settings().default_labor_rate || 65),
+    target_margin_pct: Number(cfg.target_margin_pct || 30),
+    labor_variance_pct: accuracy.avg_variance_pct || 0,
+    similar, client: client?.name || '',
+  };
+}
+
+/** A compact, honest picture of the books for the general assistant. */
+function aiSnapshot(scope) {
+  const W = SC.where(scope);
+  const cfg = companyOf(scope.activeId);
+  const jobs = db.prepare(`SELECT * FROM jobs WHERE ${W.sql} ORDER BY id DESC LIMIT 40`).all(...W.params).map(j => {
+    const f = jobFinancials(j.id);
+    return { job: j.job_number, title: j.title, status: j.status, sold: f.sold_price, cost: f.total_cost,
+      profit: f.profit, margin_pct: f.margin_pct, hours: f.labor_hours, est_hours: j.est_labor_hours };
+  });
+  const invoices = db.prepare(`SELECT * FROM invoices WHERE status NOT IN ('void') AND ${W.sql} ORDER BY id DESC LIMIT 40`).all(...W.params).map(i => {
+    const t = invoiceTotals(i, paidOn(i.id));
+    return { invoice: i.invoice_number, status: i.status, total: t.total, balance: t.balance,
+      due: i.due_date, days_late: i.due_date && i.due_date < today() && t.balance > 0.005
+        ? Math.round((Date.parse(today()) - Date.parse(i.due_date)) / 86400000) : 0 };
+  });
+  const quotes = db.prepare(`SELECT * FROM quotes WHERE status IN ('draft','sent') AND ${W.sql} ORDER BY id DESC LIMIT 25`).all(...W.params)
+    .map(q => ({ quote: q.quote_number, title: q.title, status: q.status, value: docTotals(q).total, sent: (q.sent_at || '').slice(0, 10) }));
+  const lowStock = db.prepare(`SELECT name, unit, qty_on_hand, reorder_point FROM materials WHERE qty_on_hand <= reorder_point AND ${W.sql}`).all(...W.params);
+  const openWos = db.prepare(`SELECT wo_number, title, status, priority, due_date FROM work_orders WHERE status IN ('open','in_progress') AND ${W.sql} ORDER BY due_date`).all(...W.params).slice(0, 25);
+  const onClock = db.prepare(`SELECT e.name, j.job_number, t.clock_in FROM time_entries t
+    JOIN employees e ON e.id = t.employee_id LEFT JOIN jobs j ON j.id = t.job_id
+    WHERE t.clock_out IS NULL AND ${SC.where(scope, 'e').sql}`).all(...W.params);
+  const expiring = db.prepare(`SELECT s.name, d.doc_type, d.expires_on FROM sub_documents d
+    JOIN subcontractors s ON s.id = d.sub_id WHERE d.expires_on <> '' AND d.expires_on <= ? ORDER BY d.expires_on`)
+    .all(addDays(today(), 45));
+  return {
+    as_of: today(), company: cfg.company_name, target_margin_pct: Number(cfg.target_margin_pct || 30),
+    jobs, invoices, open_quotes: quotes, low_stock: lowStock, open_work_orders: openWos,
+    on_the_clock: onClock, expiring_sub_documents: expiring,
+    labor_accuracy: laborAccuracy(scope), cash_flow: cashflow(8, scope).weeks?.slice(0, 8) || [],
+  };
+}
+
 // ---------------------------------------------------------------- capacity planning
 function capacity(weeks = 4, scope) {
   const CW = SC.where(scope, 'e');
@@ -1140,6 +1221,48 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
       delete r.hourly_rate;
     }
     return json(res, 200, rows);
+  }
+
+  // ---- AI estimating assistant ----
+  if (resource === 'ai') {
+    const cfg = ai.config(settings());
+    if (idOrAction === 'status' && method === 'GET') {
+      return json(res, 200, {
+        ready: ai.ready(settings()), model: cfg.model, enabled: cfg.enabled,
+        has_key: Boolean(cfg.key), base_url: cfg.base,
+        catalog_size: aiCatalog(scope).length,
+        mode: ai.ready(settings()) ? 'model' : 'local',
+      });
+    }
+    if (idOrAction === 'draft' && method === 'POST') {
+      const description = String(body.description || '').trim();
+      if (description.length < 4) return json(res, 400, { error: 'Describe the work first — a sentence is enough.' });
+      const ctx = aiContext(scope, { title: body.title || description.slice(0, 80), clientId: body.client_id });
+      if (!ctx.catalog.length) return json(res, 200, { items: [], assumptions: [], questions: [], mode: 'local',
+        note: 'There is no priced history or material list for this entity yet, so there is nothing to price from. Add materials or save a quote or two first.' });
+      const out = await ai.draft(description, ctx, settings());
+      out.labor_rate = ctx.labor_rate;
+      out.catalog_size = ctx.catalog.length;
+      auth.audit(user, 'ai_draft', `${out.mode} · ${out.items.length} lines · "${description.slice(0, 60)}"`);
+      return json(res, 200, out);
+    }
+    if (idOrAction === 'ask' && method === 'POST') {
+      const question = String(body.question || '').trim();
+      if (!question) return json(res, 400, { error: 'Ask a question' });
+      if (!ai.ready(settings())) return json(res, 200, { answer: null, mode: 'unavailable',
+        message: 'The assistant needs an API key. Add one under Settings → AI Assistant. Quote drafting works without it.' });
+      try {
+        const out = await ai.ask(question, aiSnapshot(scope), settings(), Array.isArray(body.thread) ? body.thread : []);
+        auth.audit(user, 'ai_ask', question.slice(0, 80));
+        return json(res, 200, out);
+      } catch (e) { return json(res, 502, { error: e.message }); }
+    }
+    if (idOrAction === 'polish' && method === 'POST') {
+      if (!ai.ready(settings())) return json(res, 200, { text: null, mode: 'unavailable' });
+      try {
+        return json(res, 200, await ai.polish(body.text || '', body.kind || 'scope', aiContext(scope), settings()));
+      } catch (e) { return json(res, 502, { error: e.message }); }
+    }
   }
 
   // ---- quotes ----
@@ -1936,13 +2059,14 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
     if (method === 'GET') {
       const s = settings();
       if (s.smtp_pass) s.smtp_pass = '••••••••';
+      if (s.ai_api_key) s.ai_api_key = '••••••••';
       return json(res, 200, s);
     }
     if (method === 'PUT') {
       const stmt = db.prepare(`INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
       for (const [k, v] of Object.entries(body)) {
         if (k === 'seeded') continue;
-        if (k === 'smtp_pass' && /^•+$/.test(String(v))) continue;
+        if ((k === 'smtp_pass' || k === 'ai_api_key') && /^•+$/.test(String(v))) continue;
         stmt.run(k, String(v));
       }
       auth.audit(user, 'settings_updated', Object.keys(body).join(', '));

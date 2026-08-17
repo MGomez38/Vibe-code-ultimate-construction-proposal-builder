@@ -528,3 +528,106 @@ a.plain:hover { text-decoration: underline; }
   .view { padding: 16px; }
   .kpis { grid-template-columns: 1fr 1fr; }
 }
+
+/* ============================================================
+   AI estimating assistant
+   Violet, deliberately unlike the amber of the rest of the app:
+   you should always know when you are looking at drafted work
+   rather than something a person typed.
+   ============================================================ */
+.ai-spark { color: #8b6ff0; font-size: 1.05em; }
+
+.aibox {
+  margin: 18px 0 4px; padding: 15px; border-radius: 10px;
+  border: 1px solid #ddd6f7; background: linear-gradient(180deg, #faf8ff, #fff);
+}
+.aibox-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.aibox-head h3 { font-size: 14px; margin: 0; }
+.ai-mode {
+  font-size: 11px; font-weight: 700; letter-spacing: .3px; padding: 3px 8px; border-radius: 20px;
+  background: #efeaff; color: #6a4fd0; white-space: nowrap;
+}
+.ai-mode.local { background: #eef1f5; color: var(--steel); }
+.ai-sub { font-size: 12.5px; color: var(--steel); line-height: 1.55; margin: 4px 0 10px; }
+.aibox textarea {
+  width: 100%; border: 1px solid #ddd6f7; border-radius: 9px; padding: 11px 12px;
+  font-size: 13.5px; font-family: inherit; line-height: 1.55; outline: none; resize: vertical;
+}
+.aibox textarea:focus { border-color: #8b6ff0; box-shadow: 0 0 0 3px rgba(139,111,240,.16); }
+.ai-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.ai-thinking { font-size: 13px; color: #6a4fd0; padding: 14px 0 4px; }
+.ai-summary {
+  font-size: 12.5px; color: var(--steel); padding: 12px 0 8px; line-height: 1.6;
+}
+.ai-summary b { color: var(--ink); }
+
+.ai-lines { width: 100%; border-collapse: collapse; }
+.ai-lines td { padding: 9px 6px; border-top: 1px solid #ece7fb; vertical-align: top; font-size: 13px; }
+.ai-lines tr { cursor: pointer; }
+.ai-lines tr:hover td { background: #faf8ff; }
+.ai-lines tr.unpriced td { background: #fffaf0; }
+.ai-lines td.pick { width: 26px; padding-left: 0; }
+.ai-lines td.num { text-align: right; white-space: nowrap; }
+.al-desc { font-weight: 650; line-height: 1.4; }
+.al-why { font-size: 11.5px; color: var(--mist); margin-top: 2px; line-height: 1.5; }
+.al-src {
+  font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px;
+  padding: 2px 6px; border-radius: 4px; margin-left: 5px; white-space: nowrap;
+}
+.s-catalog { background: #e2f4ea; color: #1f7a4d; }
+.s-history { background: #efeaff; color: #6a4fd0; }
+.s-new { background: #fdf0d7; color: #a06a00; }
+
+.ai-labor {
+  display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--steel);
+  padding: 10px 0 0; line-height: 1.5; cursor: pointer;
+}
+.ai-labor input { margin-top: 2px; }
+.ai-scope {
+  font-size: 12.5px; color: var(--ink); background: #faf8ff; border-left: 3px solid #c9bcf5;
+  padding: 9px 11px; border-radius: 0 7px 7px 0; margin: 6px 0 0 22px; line-height: 1.6;
+}
+.ai-notes { margin-top: 12px; font-size: 12.5px; }
+.ai-notes h5 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--mist); margin-bottom: 5px; }
+.ai-notes ul { margin: 0; padding-left: 18px; color: var(--steel); line-height: 1.6; }
+.ai-notes.q ul { color: #a06a00; }
+
+/* the ask-anything drawer */
+.ai-btn {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid #ddd6f7; background: #faf8ff;
+  color: #6a4fd0; font-family: inherit; font-size: 13px; font-weight: 700;
+  padding: 8px 13px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+}
+.ai-btn:hover { background: #f2edff; }
+.ai-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 90;
+  background: var(--card); border-left: 1px solid var(--line); box-shadow: -8px 0 32px rgba(19,28,38,.12);
+  display: flex; flex-direction: column; transform: translateX(102%); transition: transform .22s ease;
+}
+.ai-drawer.open { transform: none; }
+.aid-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  padding: 16px 18px; border-bottom: 1px solid var(--line);
+}
+.aid-head h2 { font-size: 16px; margin-bottom: 5px; }
+.aid-log { flex: 1; overflow-y: auto; padding: 16px 18px; }
+.aid-empty { font-size: 13px; color: var(--steel); line-height: 1.6; }
+.aid-starter {
+  display: block; width: 100%; text-align: left; margin-top: 8px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 9px; background: #fbfcfa; cursor: pointer;
+  font-family: inherit; font-size: 13px; color: var(--ink);
+}
+.aid-starter:hover { border-color: #c9bcf5; background: #faf8ff; }
+.aid-msg { font-size: 13.5px; line-height: 1.65; margin-bottom: 14px; }
+.aid-msg.user {
+  background: var(--ink); color: #fff; padding: 10px 13px; border-radius: 12px 12px 3px 12px;
+  margin-left: 32px; font-weight: 550;
+}
+.aid-msg.assistant { color: var(--ink); padding-left: 2px; }
+.aid-msg.thinking { color: #6a4fd0; }
+.aid-foot { border-top: 1px solid var(--line); padding: 12px 14px; display: flex; gap: 9px; align-items: flex-end; }
+.aid-foot textarea {
+  flex: 1; border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px;
+  font-family: inherit; font-size: 13.5px; resize: none; outline: none; line-height: 1.5;
+}
+.aid-foot textarea:focus { border-color: #8b6ff0; box-shadow: 0 0 0 3px rgba(139,111,240,.16); }

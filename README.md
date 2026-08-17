@@ -55,6 +55,14 @@ One thing to know: only intercompany work sitting inside a **completed** job is 
 
 ## The parts that make you money
 
+**AI quoting.** Describe the job the way you would say it out loud — "*Frame a 20x30 storage room. 120 2x4 studs 8ft. 14 sheets of 5/8 drywall. 2 pails interior paint. 24 hours framing and hanging*" — and the estimator drafts the line items. It pulls the quantity and unit out of each line, matches it against **your own** priced history and material list, and fills in what you charge for that item, with a note saying where the number came from and how many times you have quoted it. Hours callouts become labor, not material. Anything it has never seen comes back **blank on purpose**, with the question you need answered before the quote goes out.
+
+This works with no API key and no internet — the local engine reads your catalog. Add a key under **Settings → AI Assistant** and the same grounding facts go to the model, which handles long messy scopes more cleanly and writes better line descriptions. Either way, **every price the model returns is re-checked against your catalog before you see it**: if we know what the thing costs, our number replaces theirs and the panel says so ("*The draft suggested $4.25 — your history won*"). A price it claims came from your history that matches nothing gets stripped to blank rather than trusted. A quoting tool that lets a model invent a unit price is a tool that loses money quietly.
+
+Nothing is added to the quote until you check the lines and click. Labor hours, the tightened-up scope paragraph and each line are all individually opt-in.
+
+**Ask about your numbers.** The **✦ Ask** button in the header opens an assistant that answers from a live snapshot of the entity you are currently in — job margins, AR aging, labor variance, low stock, who is on the clock, the cash flow weeks. "Which jobs are running below target margin?" gets an answer with the job numbers attached so you can check it. It is scoped exactly like the rest of the app: an All Spec user asking about margins sees All Spec. Needs an API key; quote drafting does not.
+
 **Estimating that learns.** Every quote line you have ever sent, every work order you have ever built, and every material in stock is searchable from inside the quote builder — with what you charged, the range, and when you last used it. One click drops it in at your historical price. Meanwhile the system watches your labor estimates against the clock: the seeded demo company bids about 11% light, so a 60-hour estimate gets flagged as *"on past jobs that would land closer to 66.6 hours — roughly $429 of labor you have not billed for."* Similar past jobs and their real margins show up next to it, before you send anything.
 
 **Change orders.** Priced like a quote, emailed to the customer, approved online with a typed signature. An approval automatically raises the job's contract value, extends the end date by the change order's schedule days, and flows into profit — so scope creep stops eating your margin silently. When a crew member flags a problem in a field job card, Insights nags you until it is either priced as a change order or dismissed.
@@ -119,7 +127,9 @@ Everything lives under `data/` — the database, uploaded photos, backups, and t
 npm test
 ```
 
-56 tests over `lib/finance.js`, `lib/scope.js` and `lib/nesting.js` — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
+77 tests over `lib/finance.js`, `lib/scope.js`, `lib/nesting.js` and `lib/ai.js` — the modules every invoice, job margin, paycheck and entity boundary goes through. They cover markup/tax compounding order, retainage withheld after tax, contract value moving with approved (not pending) change orders, labor variance, invoice roll-ups, and the edge cases that quietly produce wrong numbers: malformed line-item JSON, division by zero on unpriced work, open punches with no clock-out, and half-cent rounding. The intercompany suite pins down the transfer-price rule, the group elimination, and that a pinned user's cookie can never widen their access.
+
+The AI suite guards the two things in the estimator that cost real money when they break quietly: reading a quantity out of a sentence (`120 2x4 studs 8ft` is 120 studs, not 8), and letting a price onto a quote that did not come from your catalog. It pins the near-miss rejection too — "spiral duct" must not match "duct liner & sealant" on the shared word *duct*, because quoting the wrong item is worse than quoting nothing.
 
 ## Security notes
 
