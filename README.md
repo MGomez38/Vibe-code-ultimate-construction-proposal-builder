@@ -45,6 +45,8 @@ Change these before real use — **Users & Access** for other people, the avatar
 
 ## The parts that keep the field working
 
+**The shop build sheet.** The office attaches drawings, sketches and reference photos (JPG, PNG or PDF) to a work order. The shop opens it on their phone under **My Work** and gets the whole packet: what they're building, the cut and material list, and every plan full-screen with a tap. The shop queue shows all open tickets, not just the ones assigned to them, so a bench hand can pick up the next job — but only the assignee can close it out. Quantities are there; costs and prices are not, and never leave the server for that screen.
+
 **Photos and voice from the job site.** Crew attach photos to any job card — the browser downscales them before upload so they go through on bad signal — and can dictate the work performed and problem notes instead of typing with gloves on. Photos appear on the job card in the office and on the job's detail page.
 
 **Works with no signal.** The portal is an installable PWA. In a basement with no bars, clock-ins, clock-outs and job cards save to the phone and sync automatically the moment signal returns, keeping the real timestamps. Replayed entries are de-duplicated server-side, so a flaky connection never double-punches anyone.

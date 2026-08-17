@@ -439,6 +439,43 @@ async function portalApi(req, res, parts, body, user, url) {
     return json(res, 200, rows);
   }
 
+  /**
+   * The shop packet: what to build, and the plans to build it from.
+   * Costs and prices are stripped here — the bench needs quantities, not margins.
+   */
+  if (section === 'workorders' && req.method === 'GET') {
+    if (parts[3]) {
+      const wo = db.prepare(`SELECT w.*, j.job_number, j.title AS job_title, j.address, c.name AS client_name,
+          e.name AS assigned_name FROM work_orders w
+        LEFT JOIN jobs j ON j.id = w.job_id LEFT JOIN clients c ON c.id = w.client_id
+        LEFT JOIN employees e ON e.id = w.assigned_to WHERE w.id = ?`).get(parts[3]);
+      if (!wo) return json(res, 404, { error: 'Work order not found' });
+      return json(res, 200, {
+        id: wo.id, wo_number: wo.wo_number, title: wo.title, description: wo.description,
+        wo_type: wo.wo_type, priority: wo.priority, status: wo.status, due_date: wo.due_date,
+        labor_hours: wo.labor_hours, notes: wo.notes,
+        job_number: wo.job_number, job_title: wo.job_title, address: wo.address,
+        client_name: wo.client_name, assigned_name: wo.assigned_name,
+        mine: wo.assigned_to === empId,
+        build_list: parseItems(wo.items).map(i => ({ desc: i.desc, qty: i.qty, unit: i.unit || '' })),
+        plans: attachmentsFor('work_order', wo.id),
+        job_plans: wo.job_id ? attachmentsFor('job', wo.job_id) : [],
+      });
+    }
+    // the whole shop queue, mine first — a bench hand can pick up any open ticket
+    const rows = db.prepare(`SELECT w.id, w.wo_number, w.title, w.wo_type, w.priority, w.status, w.due_date,
+        w.assigned_to, j.job_number, e.name AS assigned_name FROM work_orders w
+      LEFT JOIN jobs j ON j.id = w.job_id LEFT JOIN employees e ON e.id = w.assigned_to
+      WHERE w.status IN ('open','in_progress')
+      ORDER BY CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.due_date`).all();
+    for (const r of rows) {
+      r.mine = r.assigned_to === empId;
+      r.plan_count = db.prepare(`SELECT COUNT(*) n FROM attachments WHERE entity_type = 'work_order' AND entity_id = ?`).get(r.id).n;
+      delete r.assigned_to;
+    }
+    return json(res, 200, rows);
+  }
+
   if (section === 'workorders' && req.method === 'PUT') {
     const wo = db.prepare('SELECT * FROM work_orders WHERE id = ?').get(parts[3]);
     if (!wo || wo.assigned_to !== empId) return json(res, 403, { error: 'That work order is not assigned to you' });
@@ -1075,7 +1112,7 @@ async function adminApi(req, res, parts, body, query, user, url) {
       LEFT JOIN clients c ON c.id = w.client_id LEFT JOIN employees e ON e.id = w.assigned_to LEFT JOIN jobs j ON j.id = w.job_id
       ORDER BY CASE w.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END,
                CASE w.priority WHEN 'rush' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, w.id DESC`).all();
-    rows.forEach(r => { r.financials = woFinancials(r); });
+    rows.forEach(r => { r.financials = woFinancials(r); r.attachments = attachmentsFor('work_order', r.id); });
     return json(res, 200, rows);
   }
 

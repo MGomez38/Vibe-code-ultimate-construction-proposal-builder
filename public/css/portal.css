@@ -195,6 +195,56 @@ textarea { min-height: 84px; resize: vertical; }
 .p-msg.err { border-left-color: var(--red); }
 @keyframes up { from { opacity: 0; transform: translateY(10px); } }
 
+/* build sheet — the work order a shop hand opens at the bench */
+.tappable { cursor: pointer; }
+.wo.tappable:active { background: #fbfcfa; }
+.wo-open {
+  margin-top: 9px; font-size: 13px; font-weight: 700; color: var(--amber);
+}
+.t-plans { background: #e7effc; color: #2d62b5; }
+.back-link {
+  background: none; border: 0; color: var(--steel); font-size: 14px; font-weight: 650;
+  padding: 4px 0 10px; cursor: pointer; font-family: inherit;
+}
+.build-head { border-left: 5px solid var(--mist); }
+.build-head.rush { border-left-color: var(--red); }
+.build-head.high { border-left-color: #7c5cd6; }
+.build-head.normal { border-left-color: var(--amber); }
+.build-head .top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+.build-head .num { font-family: var(--mono); font-weight: 700; font-size: 14px; }
+.build-head h2 { font-size: 22px; line-height: 1.25; margin-bottom: 8px; }
+.build-meta { font-size: 13.5px; color: var(--steel); line-height: 1.65; }
+.build-meta b { color: var(--ink); }
+.build-desc { font-size: 16px; line-height: 1.6; color: var(--ink); white-space: pre-wrap; }
+
+.build-item {
+  display: flex; gap: 12px; align-items: baseline;
+  padding: 11px 0; border-bottom: 1px solid #eef1f4;
+}
+.build-item:last-child { border-bottom: 0; }
+.build-item .q {
+  font-family: var(--mono); font-weight: 800; font-size: 16px; color: var(--ink);
+  min-width: 74px; flex-shrink: 0;
+}
+.build-item .d { font-size: 15.5px; line-height: 1.45; }
+
+/* plans gallery — big enough to actually read on a phone */
+.plan-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.plan-tile {
+  display: block; text-decoration: none; color: inherit;
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff;
+}
+.plan-tile img { width: 100%; height: 132px; object-fit: cover; display: block; background: var(--paper); }
+.plan-tile .plan-pdf {
+  display: grid; place-items: center; height: 132px; background: #fbe7e7;
+  color: #b03030; font-weight: 800; font-size: 20px; letter-spacing: 1px;
+}
+.plan-tile .plan-cap {
+  display: block; padding: 8px 10px; font-size: 12.5px; color: var(--steel);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (min-width: 620px) { .plan-tiles { grid-template-columns: repeat(3, 1fr); } }
+
 /* offline banner */
 .p-offline { display: none; }
 .p-offline.show {

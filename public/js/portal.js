@@ -202,7 +202,7 @@ async function pageHome() {
     ${d.work_orders.length ? `<div class="pc">
       <h3>Your Open Work Orders<span class="r">${d.work_orders.length}</span></h3>
       ${d.work_orders.slice(0, 3).map(w => `
-        <div class="assign">
+        <div class="assign tappable" onclick="location.hash='#/work/${w.id}'">
           <span class="jn ${w.priority === 'rush' ? '' : 'shop'}">${esc(w.wo_number)}</span>
           <div><div class="t">${esc(w.title)}</div>
           <div class="s">${cap(w.wo_type)}${w.due_date ? ' · due ' + esc(w.due_date) : ''}${w.priority === 'rush' ? ' · RUSH' : ''}</div></div>
@@ -288,31 +288,38 @@ async function pageHours() {
 }
 
 // ---------------------------------------------------------------- My Work
+function woTile(w) {
+  const late = w.due_date && w.due_date < todayStr();
+  return `<div class="wo ${esc(w.priority)} tappable" data-open="${w.id}">
+    <div class="top">
+      <span class="num">${esc(w.wo_number)}</span>
+      <span class="tag t-${esc(w.priority)}">${esc(w.priority)}</span>
+      <span class="tag t-${esc(w.status)}">${esc(cap(w.status))}</span>
+      ${late ? '<span class="tag t-late">Past due</span>' : ''}
+      ${w.plan_count ? `<span class="tag t-plans">📎 ${w.plan_count} plan${w.plan_count === 1 ? '' : 's'}</span>` : ''}
+    </div>
+    <div class="ttl">${esc(w.title)}</div>
+    <div class="s" style="font-size:12.5px;color:var(--mist)">
+      ${cap(w.wo_type)}${w.job_number ? ' · ' + esc(w.job_number) : ''}${w.due_date ? ' · due ' + esc(w.due_date) : ''}${!w.mine && w.assigned_name ? ' · ' + esc(w.assigned_name) : ''}
+    </div>
+    <div class="wo-open">Open build sheet →</div>
+  </div>`;
+}
+
 async function pageWork() {
-  const d = await cachedApi('portal/summary');
+  const list = await cachedApi('portal/workorders');
+  const mine = list.filter(w => w.mine);
+  const shop = list.filter(w => !w.mine);
   view.innerHTML = `
     <div class="pc">
-      <h3>Assigned To You<span class="r">${d.work_orders.length} open</span></h3>
-      ${d.work_orders.length ? d.work_orders.map(w => {
-        const late = w.due_date && w.due_date < todayStr();
-        return `<div class="wo ${esc(w.priority)}">
-          <div class="top">
-            <span class="num">${esc(w.wo_number)}</span>
-            <span class="tag t-${esc(w.priority)}">${esc(w.priority)}</span>
-            <span class="tag t-${esc(w.status)}">${esc(cap(w.status))}</span>
-            ${late ? '<span class="tag t-late">Past due</span>' : ''}
-            ${w.job_number ? `<span style="color:var(--mist);font-size:12.5px">${esc(w.job_number)}</span>` : ''}
-          </div>
-          <div class="ttl">${esc(w.title)}</div>
-          ${w.description ? `<div class="desc">${esc(w.description)}</div>` : ''}
-          <div class="s" style="font-size:12.5px;color:var(--mist);margin-bottom:10px">${cap(w.wo_type)}${w.due_date ? ' · due ' + esc(w.due_date) : ''}</div>
-          <div class="acts">
-            ${w.status === 'open' ? `<button class="act-start" data-start="${w.id}">Start Work</button>` : ''}
-            <button class="act-done" data-done="${w.id}">Mark Complete</button>
-          </div>
-        </div>`;
-      }).join('') : '<div class="p-empty">No work orders assigned to you right now.</div>'}
+      <h3>Your Work<span class="r">${mine.length} open</span></h3>
+      ${mine.length ? mine.map(woTile).join('') : '<div class="p-empty">Nothing assigned to you right now — pick something up from the shop queue below.</div>'}
     </div>
+
+    ${shop.length ? `<div class="pc">
+      <h3>Shop Queue<span class="r">${shop.length} more</span></h3>
+      ${shop.map(woTile).join('')}
+    </div>` : ''}
 
     <div class="pc">
       <h3>Shop Stock Lookup</h3>
@@ -320,14 +327,9 @@ async function pageWork() {
       <div id="mat-list"></div>
     </div>`;
 
-  view.onclick = async e => {
-    const start = e.target.dataset.start, done = e.target.dataset.done;
-    if (!start && !done) return;
-    if (!navigator.onLine) return msg('You need signal to update a work order', 'err');
-    try {
-      if (start) { await api('portal/workorders/' + start, 'PUT', { status: 'in_progress' }); msg('Started — the office can see it', 'ok'); pageWork(); }
-      if (done) { await api('portal/workorders/' + done, 'PUT', { status: 'completed' }); msg('Marked complete. Nice work.', 'ok'); pageWork(); }
-    } catch (err) { msg(err.message, 'err'); }
+  view.onclick = e => {
+    const tile = e.target.closest('[data-open]');
+    if (tile) location.hash = `#/work/${tile.dataset.open}`;
   };
 
   const materials = await cachedApi('portal/materials');
@@ -342,6 +344,91 @@ async function pageWork() {
   };
   renderMats('');
   $('#mat-q').oninput = e => renderMats(e.target.value);
+}
+
+// ---------------------------------------------------------------- Build sheet
+/** One work order, full screen: what to build, and the plans to build it from. */
+async function pageWorkDetail(id) {
+  const w = await cachedApi('portal/workorders/' + id);
+  const late = w.due_date && w.due_date < todayStr();
+  const planTile = (p, label) => `
+    <a class="plan-tile" href="/uploads/${esc(p.filename)}" target="_blank" rel="noopener">
+      ${p.mime === 'application/pdf'
+        ? `<span class="plan-pdf">PDF</span>`
+        : `<img src="/uploads/${esc(p.filename)}" alt="" loading="lazy">`}
+      <span class="plan-cap">${esc(p.caption || p.original_name || label)}</span>
+    </a>`;
+
+  view.innerHTML = `
+    <button class="back-link" id="wd-back">← Back to my work</button>
+
+    <div class="pc build-head ${esc(w.priority)}">
+      <div class="top">
+        <span class="num">${esc(w.wo_number)}</span>
+        <span class="tag t-${esc(w.priority)}">${esc(w.priority)}</span>
+        <span class="tag t-${esc(w.status)}">${esc(cap(w.status))}</span>
+        ${late ? '<span class="tag t-late">Past due</span>' : ''}
+      </div>
+      <h2>${esc(w.title)}</h2>
+      <div class="build-meta">
+        ${cap(w.wo_type)}${w.due_date ? ` · due <b>${esc(w.due_date)}</b>` : ''}${w.labor_hours ? ` · ${w.labor_hours} hrs estimated` : ''}
+        ${w.job_number ? `<br>${esc(w.job_number)} — ${esc(w.job_title || '')}` : ''}
+        ${w.client_name ? `<br>For ${esc(w.client_name)}` : ''}
+        ${w.address ? `<br>${esc(w.address)}` : ''}
+        ${w.assigned_name && !w.mine ? `<br>Assigned to ${esc(w.assigned_name)}` : ''}
+      </div>
+    </div>
+
+    ${w.description ? `<div class="pc">
+      <h3>What You're Building</h3>
+      <div class="build-desc">${esc(w.description)}</div>
+    </div>` : ''}
+
+    ${w.build_list.length ? `<div class="pc">
+      <h3>Cut / Material List</h3>
+      ${w.build_list.map(i => `<div class="build-item">
+        <span class="q">${esc(i.qty)}${i.unit ? ' ' + esc(i.unit) : ''}</span>
+        <span class="d">${esc(i.desc)}</span>
+      </div>`).join('')}
+    </div>` : ''}
+
+    ${w.plans.length ? `<div class="pc">
+      <h3>Plans &amp; Photos<span class="r">tap to open full size</span></h3>
+      <div class="plan-tiles">${w.plans.map(p => planTile(p, 'Plan')).join('')}</div>
+    </div>` : ''}
+
+    ${w.job_plans.length ? `<div class="pc">
+      <h3>Job Plans<span class="r">from ${esc(w.job_number || 'the job')}</span></h3>
+      <div class="plan-tiles">${w.job_plans.map(p => planTile(p, 'Job plan')).join('')}</div>
+    </div>` : ''}
+
+    ${!w.plans.length && !w.job_plans.length ? `<div class="pc">
+      <h3>Plans &amp; Photos</h3>
+      <div class="p-empty">No drawings attached yet. Ask the office to add them — they show up here automatically.</div>
+    </div>` : ''}
+
+    ${w.notes ? `<div class="pc"><h3>Shop Notes</h3><div class="build-desc">${esc(w.notes)}</div></div>` : ''}
+
+    ${w.mine ? `<div class="pc">
+      <h3>Update Status</h3>
+      <div class="btn-row">
+        ${w.status === 'open' ? '<button class="big-btn dark" id="wd-start">Start Work</button>' : ''}
+        <button class="big-btn go" id="wd-done" ${w.status === 'open' ? '' : 'style="grid-column:1/-1"'}>Mark Complete</button>
+      </div>
+    </div>` : `<div class="pc"><div class="p-empty">This one is assigned to ${esc(w.assigned_name || 'someone else')}. You can read the plans, but they close it out.</div></div>`}`;
+
+  $('#wd-back').onclick = () => { location.hash = '#/work'; };
+
+  const update = async status => {
+    if (!navigator.onLine) return msg('You need signal to update a work order', 'err');
+    try {
+      await api('portal/workorders/' + w.id, 'PUT', { status });
+      msg(status === 'completed' ? 'Marked complete. Nice work.' : 'Started — the office can see it', 'ok');
+      if (status === 'completed') location.hash = '#/work'; else pageWorkDetail(id);
+    } catch (e) { msg(e.message, 'err'); }
+  };
+  const startBtn = $('#wd-start'); if (startBtn) startBtn.onclick = () => update('in_progress');
+  const doneBtn = $('#wd-done'); if (doneBtn) doneBtn.onclick = () => update('completed');
 }
 
 // ---------------------------------------------------------------- Job Card
@@ -453,10 +540,13 @@ async function pageCard() {
 const TABS = { home: pageHome, week: pageWeek, hours: pageHours, work: pageWork, card: pageCard };
 
 async function route() {
-  const tab = (location.hash.replace(/^#\//, '') || 'home').split('/')[0];
+  const [tab, param] = (location.hash.replace(/^#\//, '') || 'home').split('/');
   $$('.p-tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
   view.innerHTML = '<div class="p-empty">Loading…</div>';
-  try { await (TABS[tab] || pageHome)(); }
+  try {
+    if (tab === 'work' && param) await pageWorkDetail(param);
+    else await (TABS[tab] || pageHome)();
+  }
   catch (e) { view.innerHTML = `<div class="p-empty">⚠ ${esc(e.message)}<br><br>${navigator.onLine ? '' : 'You are offline — clock in and job cards still work from the Today tab.'}</div>`; }
   window.scrollTo(0, 0);
 }

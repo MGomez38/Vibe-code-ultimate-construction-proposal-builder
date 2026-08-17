@@ -200,6 +200,87 @@ function lineItemEditor(container, items, { withPrice = true, onChange } = {}) {
   return items;
 }
 
+/**
+ * Upload and manage plans/photos on any record. Images are downscaled in the
+ * browser first so a 12 MP phone plan photo doesn't take a minute to send.
+ */
+function attachmentEditor(container, entityType, entityId, emptyHint = '') {
+  if (!entityId) {
+    container.innerHTML = `<div class="empty" style="padding:16px;font-size:13px">${esc(emptyHint)}</div>`;
+    return;
+  }
+  const inputId = `att-file-${entityType}-${entityId}`;
+
+  async function shrink(file) {
+    if (!file.type.startsWith('image/')) return file;             // PDFs go up untouched
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+        if (scale === 1 && file.size < 1.5e6) return resolve(file);
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        c.toBlob(b => resolve(b || file), 'image/jpeg', 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  async function render() {
+    const files = await api(`attachments?entity_type=${entityType}&entity_id=${entityId}`);
+    container.innerHTML = `
+      <div class="plan-grid">
+        ${files.map(f => `
+          <div class="plan" data-id="${f.id}">
+            <a href="/uploads/${esc(f.filename)}" target="_blank" title="${esc(f.original_name)}">
+              ${f.mime === 'application/pdf'
+                ? `<span class="plan-pdf">PDF</span>`
+                : `<img src="/uploads/${esc(f.filename)}" alt="">`}
+            </a>
+            <div class="plan-name">${esc(f.caption || f.original_name)}</div>
+            <button class="plan-del" data-del="${f.id}" title="Remove">×</button>
+          </div>`).join('')}
+        <label class="plan-add" for="${inputId}">
+          <span>＋</span><small>Add plans or photos</small>
+        </label>
+      </div>
+      <input id="${inputId}" type="file" accept="image/*,application/pdf" multiple hidden>
+      <div class="muted" style="font-size:12px;margin-top:7px">Drawings, sketches, reference photos — JPG, PNG or PDF. The shop sees these on their phone.</div>`;
+
+    $(`#${inputId}`).onchange = async e => {
+      const picked = [...e.target.files];
+      if (!picked.length) return;
+      const label = container.querySelector('.plan-add');
+      label.innerHTML = `<span>…</span><small>Uploading ${picked.length}</small>`;
+      const form = new FormData();
+      for (const file of picked) {
+        const blob = await shrink(file);
+        form.append('file', blob, file.name.replace(/\.[^.]+$/, '') + (file.type === 'application/pdf' ? '.pdf' : '.jpg'));
+      }
+      try {
+        const res = await fetch(`/api/attachments?entity_type=${entityType}&entity_id=${entityId}`, { method: 'POST', body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        toast(`${data.saved.length} file${data.saved.length === 1 ? '' : 's'} attached`, 'ok');
+      } catch (err) { toast(err.message, 'err'); }
+      render();
+    };
+    container.onclick = async e => {
+      const id = e.target.dataset.del;
+      if (!id) return;
+      e.preventDefault();
+      if (!confirm('Remove this file?')) return;
+      await api('attachments/' + id, 'DELETE');
+      render();
+    };
+  }
+  render();
+}
+
 function calcQuote(items, laborHours, laborRate, markupPct, taxPct) {
   const materials = items.reduce((s, i) => s + (i.qty || 0) * (i.unit_price || 0), 0);
   const labor = laborHours * laborRate;
@@ -872,6 +953,10 @@ async function jobDetail(id) {
         </table>
       </div>
       <div class="card">
+        <h3>Plans &amp; Site Photos <span class="hint">visible to the crew on their phones</span></h3>
+        <div id="jd-plans"></div>
+      </div>
+      <div class="card">
         <h3>Materials Used <span class="hint">deducted from inventory when linked</span></h3>
         ${job.materials.length ? `<table class="tbl"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Total</th></tr></thead><tbody>
           ${job.materials.map(m => `<tr><td>${esc(m.description || m.material_name)}</td><td class="num">${m.qty}</td><td class="num">${money(m.unit_cost)}</td><td class="num">${money(m.qty * m.unit_cost)}</td></tr>`).join('')}
@@ -952,6 +1037,7 @@ async function jobDetail(id) {
         </div>`).join('')}
     </div>` : ''}`;
 
+  attachmentEditor($('#jd-plans'), 'job', job.id);
   $('#jd-edit').onclick = () => jobModal(job);
   $('#jd-co').onclick = () => { location.hash = '#/changeorders'; setTimeout(() => window.coModalFor && window.coModalFor(null, job.id), 400); };
   $('#jd-bill').onclick = () => { location.hash = '#/invoices'; setTimeout(() => { const b = $('#inv-progress'); if (b) b.click(); }, 400); };
@@ -998,7 +1084,7 @@ PAGES.workorders = async () => {
     $('#w-body').innerHTML = rows.length ? rows.map(w => `
       <tr>
         <td class="mono strong">${esc(w.wo_number)}</td>
-        <td>${esc(w.title)}</td>
+        <td>${esc(w.title)}${w.attachments && w.attachments.length ? `<span class="clip" title="${w.attachments.length} plan(s) attached">📎${w.attachments.length}</span>` : ''}</td>
         <td class="muted">${esc(w.wo_type)}</td>
         <td class="muted">${esc(w.client_name || '—')}${w.job_number ? ` · <span class="mono">${esc(w.job_number)}</span>` : ''}</td>
         <td class="muted">${esc(w.assigned_name || '—')}</td>
@@ -1051,6 +1137,9 @@ PAGES.workorders = async () => {
         </form>
         <h3 style="margin:16px 0 4px;font-size:13px">Materials / items</h3>
         <div id="w-items"></div>
+
+        <h3 style="margin:18px 0 4px;font-size:13px">Plans &amp; Photos <span class="hint">what the shop sees on their phone</span></h3>
+        <div id="w-plans"></div>
       </div>
       <div class="modal-foot">
         ${w ? '<button class="btn danger" id="w-del" style="margin-right:auto">Delete</button>' : ''}
@@ -1058,6 +1147,8 @@ PAGES.workorders = async () => {
         <button class="btn primary" id="w-save">${w ? 'Save' : 'Create Work Order'}</button>
       </div>`);
     lineItemEditor($('#w-items'), items);
+    attachmentEditor($('#w-plans'), 'work_order', w ? w.id : null,
+      'Save the work order first, then attach drawings and reference photos.');
     $('#w-save').onclick = async () => {
       const f = formData($('#w-form'));
       if (!f.title) return toast('Title is required', 'err');
