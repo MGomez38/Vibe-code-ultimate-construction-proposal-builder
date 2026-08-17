@@ -169,24 +169,52 @@ function attachDictation(button, target) {
 
 // ---------------------------------------------------------------- Today
 async function pageHome() {
-  const d = await cachedApi('portal/summary');
+  const [d, day] = await Promise.all([cachedApi('portal/summary'), cachedApi('portal/day')]);
   const open = d.open_entry;
+  const onJob = open ? open.job_id : null;
+
   view.innerHTML = `
     <div class="pc clock-card">
       <div class="time" id="live-time"></div>
       <div class="date">${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</div>
       <div class="status-pill ${open ? 'on' : 'off'}"><i></i>${open ? 'On the clock' : 'Not clocked in'}</div>
       ${open ? `<div class="on-since">Since ${fmtTime(open.clock_in)} · <b id="run">${elapsed(open.clock_in)}</b>${open.job_number ? ` on ${esc(open.job_number)}` : ' (general shift)'}</div>`
-             : '<div class="on-since">Pick your job and clock in to start the day.</div>'}
-      <label class="fldlabel">${open ? 'Switch to another job' : 'Job'}</label>
-      <select id="job-sel">
-        <option value="">General shift / shop</option>
-        ${d.jobs.map(j => `<option value="${j.id}" ${open && open.job_id === j.id ? 'selected' : ''}>${esc(j.job_number)} — ${esc(j.title)}</option>`).join('')}
-      </select>
-      <div class="${open ? 'btn-row' : ''}">
-        <button class="big-btn go" id="btn-in">${open ? 'Switch Job' : 'Clock In'}</button>
-        ${open ? '<button class="big-btn stop" id="btn-out">Clock Out</button>' : ''}
+             : '<div class="on-since">Tap a job to start the day.</div>'}
+
+      <div class="jump-label">${open ? 'Tap to switch — one tap, no menus' : 'Tap a job to clock in'}</div>
+      <div class="jumps">
+        ${day.quick_jobs.map(j => `
+          <button class="jump ${onJob === j.id ? 'on' : ''}" data-job="${j.id}">
+            <span class="jn">${esc(j.job_number)}</span>
+            <span class="jt">${esc(j.title)}</span>
+            <span class="jh">${j.today_hours ? j.today_hours + 'h today' : (j.scheduled ? 'scheduled' : '—')}</span>
+          </button>`).join('')}
+        <button class="jump ${open && !onJob ? 'on' : ''}" data-job="">
+          <span class="jn">SHOP</span><span class="jt">General / shop time</span>
+          <span class="jh">${(day.by_job.find(b => !b.job_id) || {}).hours || 0}h today</span>
+        </button>
       </div>
+
+      <div class="${open ? 'btn-row' : ''}" style="margin-top:14px">
+        ${open ? '<button class="big-btn stop" id="btn-out">Clock Out</button>' : ''}
+        ${day.can_undo ? '<button class="big-btn undo" id="btn-undo">↶ Undo last</button>' : ''}
+      </div>
+    </div>
+
+    <div class="pc">
+      <h3>Today So Far<span class="r">${day.total_hours} hrs</span></h3>
+      ${day.by_job.length ? `<div class="split">
+        ${day.by_job.map(b => {
+          const pct = day.total_hours ? Math.round(b.hours / day.total_hours * 100) : 0;
+          return `<div class="split-row">
+            <span class="sl">${esc(b.job_number || 'Shop / general')}</span>
+            <span class="sb"><i style="width:${pct}%"></i></span>
+            <span class="sh">${b.hours}h</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <button class="linkish" style="margin-top:12px" id="see-day">See every punch →</button>`
+      : '<div class="p-empty">No time logged yet today.</div>'}
     </div>
 
     <div class="pc">
@@ -219,16 +247,29 @@ async function pageHome() {
   tick();
   const iv = setInterval(() => { if (!tick()) clearInterval(iv); }, 1000);
 
-  $('#btn-in').onclick = async () => {
-    const jobId = $('#job-sel').value ? Number($('#job-sel').value) : null;
-    if (open && (open.job_id || null) === jobId) return msg('You are already on that job', 'err');
-    if (!navigator.onLine) {
-      enqueue('clock_in', { job_id: jobId });
-      return msg('Saved on this phone — will sync when you have signal', 'ok');
-    }
-    try { const r = await api('portal/clock/in', 'POST', { job_id: jobId }); msg(r.message, 'ok'); pageHome(); }
+  // one tap = switch. No dropdown, no confirm — he does this all day.
+  $$('.jump').forEach(btn => {
+    btn.onclick = async () => {
+      const jobId = btn.dataset.job ? Number(btn.dataset.job) : null;
+      if (open && (open.job_id || null) === jobId) return msg('Already on that one', 'err');
+      if (!navigator.onLine) {
+        enqueue('clock_in', { job_id: jobId });
+        return msg('Saved on this phone — will sync when you have signal', 'ok');
+      }
+      btn.classList.add('busy');
+      try { const r = await api('portal/clock/in', 'POST', { job_id: jobId }); msg(r.message, 'ok'); pageHome(); }
+      catch (e) { btn.classList.remove('busy'); msg(e.message, 'err'); }
+    };
+  });
+
+  const undoBtn = $('#btn-undo');
+  if (undoBtn) undoBtn.onclick = async () => {
+    try { const r = await api('portal/clock/undo', 'POST', {}); msg(r.message, 'ok'); pageHome(); }
     catch (e) { msg(e.message, 'err'); }
   };
+  const seeDay = $('#see-day');
+  if (seeDay) seeDay.onclick = () => { location.hash = '#/hours'; };
+
   const outBtn = $('#btn-out');
   if (outBtn) outBtn.onclick = async () => {
     if (!navigator.onLine) {
@@ -265,7 +306,7 @@ async function pageWeek() {
 
 // ---------------------------------------------------------------- My Hours
 async function pageHours() {
-  const rows = await cachedApi('portal/timesheet');
+  const [rows, day] = await Promise.all([cachedApi('portal/timesheet'), cachedApi('portal/day')]);
   const total = rows.reduce((s, r) => s + (r.hours || 0), 0);
   const weekStart = new Date(); weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
   const thisWeek = rows.filter(r => r.clock_in.slice(0, 10) >= weekStart.toISOString().slice(0, 10))
@@ -276,7 +317,23 @@ async function pageHours() {
       <div class="hstat"><div class="n">${Math.round(thisWeek * 10) / 10}</div><div class="l">This week</div></div>
       <div class="hstat"><div class="n">${Math.round(total * 10) / 10}</div><div class="l">Last 14 days</div></div>
     </div>
-    <div class="pc"><h3>Your Punches</h3>
+    <div class="pc">
+      <h3>Today, Punch By Punch<span class="r">${day.total_hours} hrs</span></h3>
+      ${day.entries.length ? `<div class="timeline">
+        ${day.entries.map(e => `
+          <div class="tl ${e.running ? 'live' : ''}">
+            <span class="tl-time">${fmtTime(e.clock_in)}<small>${e.clock_out ? fmtTime(e.clock_out) : 'now'}</small></span>
+            <span class="tl-bar"></span>
+            <span class="tl-job">
+              <b>${esc(e.job_number || 'Shop / general')}</b>
+              <small>${esc(e.job_title || '')}</small>
+            </span>
+            <span class="tl-hrs">${e.hours}h</span>
+          </div>`).join('')}
+      </div>` : '<div class="p-empty">Nothing today yet.</div>'}
+    </div>
+
+    <div class="pc"><h3>Last Two Weeks</h3>
       ${rows.length ? rows.map(r => `
         <div class="tsrow">
           <div><div class="l1">${esc(r.job_number ? r.job_number + ' — ' + r.job_title : 'General shift')}</div>
@@ -485,12 +542,29 @@ function materialLogger({ work_order_id = null, job_id = null, label = '', isFab
           <button type="button" class="ml-add" id="ml-add-metal">+ Add this metal</button>
         </div>` : ''}
 
-        <div class="fld"><label class="fldlabel">Or pull from the rack <span style="font-weight:500;text-transform:none;letter-spacing:0">(deducts from stock)</span></label>
+        <div class="fld"><label class="fldlabel">Full sheet off the rack <span style="font-weight:500;text-transform:none;letter-spacing:0">(deducts from stock)</span></label>
           <select id="ml-stock"><option value="">Pick from inventory…</option></select>
           <div class="ml-row" style="margin-top:8px">
             <input id="ml-stock-qty" type="number" step="any" inputmode="decimal" placeholder="How many">
             <button type="button" class="ml-add" id="ml-add-stock" style="margin:0">+ Add</button>
           </div>
+          <div class="cutbox" id="ml-cutbox" hidden>
+            <div class="cut-label">Cut it down? Enter the finished piece and we'll rack the drop.</div>
+            <div class="ml-row">
+              <div class="inches"><input id="ml-cut-w" type="number" step="any" inputmode="decimal" placeholder="0"><span>wide</span></div>
+              <div class="inches"><input id="ml-cut-l" type="number" step="any" inputmode="decimal" placeholder="0"><span>long</span></div>
+            </div>
+            <div class="ml-row" style="margin-top:8px">
+              <input id="ml-cut-pieces" type="number" step="1" inputmode="numeric" placeholder="How many pieces" value="1">
+              <input id="ml-drop-loc" placeholder="Drop rack">
+            </div>
+            <div id="ml-drop-preview"></div>
+          </div>
+        </div>
+
+        <div class="fld"><label class="fldlabel">Or use a drop already on the rack</label>
+          <select id="ml-remnant"><option value="">Pick a drop…</option></select>
+          <button type="button" class="ml-add" id="ml-add-remnant">+ Use this drop</button>
         </div>
 
         <div class="fld solder-box">
@@ -524,11 +598,28 @@ function materialLogger({ work_order_id = null, job_id = null, label = '', isFab
       <div class="used ${esc(l.kind)}">
         <span class="uq">${esc(l.qty)}<small>${esc(l.unit)}</small></span>
         <div class="ud"><div class="un">${esc([l.metal_type, l.gauge, l.size].filter(Boolean).join(' · ') || l.description)}</div>
-        <div class="us">${esc(l.description)}</div></div>
+        <div class="us">${esc(l.description)}${l.cut_note ? ` — ${esc(l.cut_note)}` : ''}${l.remnant_id ? ' — from the drop rack' : ''}</div></div>
         <button class="used-x" data-rm="${i}">×</button>
       </div>`).join('') : '<div class="p-empty" style="padding:14px">Nothing added yet.</div>';
     box.onclick = e => { if (e.target.dataset.rm !== undefined) { lines.splice(+e.target.dataset.rm, 1); renderLines(); } };
   }
+
+  // the drop rack
+  api('portal/remnants').then(rems => {
+    const sel = $('#ml-remnant', shell);
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Pick a drop…</option>' + rems.map(r =>
+      `<option value="${r.id}">${esc(r.tag)} — ${r.width_in}" × ${r.length_in}" ${esc([r.metal_type, r.gauge].filter(Boolean).join(' '))}${r.location ? ' @ ' + esc(r.location) : ''}</option>`).join('');
+    $('#ml-add-remnant', shell).onclick = () => {
+      const r = rems.find(x => x.id === +sel.value);
+      if (!r) return msg('Pick a drop first', 'err');
+      lines.push({ kind: 'metal', remnant_id: r.id, metal_type: r.metal_type, gauge: r.gauge,
+        size: `${r.width_in}" × ${r.length_in}" drop`, description: `${r.tag} — ${r.material_name || 'drop'}`,
+        qty: 1, unit: 'ea', client_ref: newRef() });
+      sel.value = '';
+      renderLines();
+    };
+  }).catch(() => {});
 
   stockPromise.then(stock => {
     const solder = stock.filter(m => /solder/i.test(m.category) || /solder/i.test(m.name));
@@ -538,14 +629,57 @@ function materialLogger({ work_order_id = null, job_id = null, label = '', isFab
     $('#ml-solder-type', shell).innerHTML = '<option value="">Which solder…</option>' +
       solder.map(m => `<option value="${m.id}" data-unit="${esc(m.unit)}">${esc(m.name)}</option>`).join('');
 
+    // the cut-down box only makes sense for stock that has a sheet size on file
+    const cutBox = $('#ml-cutbox', shell);
+    const stockSel = $('#ml-stock', shell);
+    let sheetStock = null;
+    stockSel.onchange = () => {
+      sheetStock = rest.find(x => x.id === +stockSel.value) || null;
+      const hasSize = sheetStock && sheetStock.sheet_width_in > 0 && sheetStock.sheet_length_in > 0;
+      cutBox.hidden = !hasSize;
+      if (hasSize) $('.cut-label', shell).textContent =
+        `Full sheet is ${sheetStock.sheet_width_in}" × ${sheetStock.sheet_length_in}". Cut it down? Enter the finished piece and we'll rack the drop.`;
+      previewDrop();
+    };
+
+    let previewTimer;
+    const previewDrop = () => {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(async () => {
+        const box = $('#ml-drop-preview', shell);
+        if (!box || !sheetStock) return;
+        const w = Number($('#ml-cut-w', shell).value), l = Number($('#ml-cut-l', shell).value);
+        if (!(w > 0 && l > 0)) return void (box.innerHTML = '');
+        try {
+          const r = await api('portal/dropcheck', 'POST', { material_id: sheetStock.id,
+            cut_width_in: w, cut_length_in: l, pieces: Number($('#ml-cut-pieces', shell).value) || 1 });
+          if (!r.ok) return void (box.innerHTML = `<div class="drop-warn">${esc(r.error)}</div>`);
+          box.innerHTML = r.drops.length
+            ? `<div class="drop-out">
+                 <b>Drop${r.drops.length > 1 ? 's' : ''} going back on the rack:</b>
+                 ${r.drops.map(d => `<span class="drop-chip">${d.width}" × ${d.length}"<small>${d.area_sqft} sqft</small></span>`).join('')}
+                 <div class="drop-meta">${r.yield_pct}% of the sheet used or saved${r.scrap_area_sqft > 0.5 ? ` · ${r.scrap_area_sqft} sqft scrap` : ''}${r.rotated ? ' · piece turned to fit' : ''}</div>
+               </div>`
+            : `<div class="drop-out"><b>No usable drop</b><div class="drop-meta">${r.scrap_area_sqft} sqft scrap${r.capacity_per_sheet > 1 ? ` · ${r.capacity_per_sheet} fit per sheet` : ''}</div></div>`;
+        } catch { box.innerHTML = ''; }
+      }, 350);
+    };
+    ['#ml-cut-w', '#ml-cut-l', '#ml-cut-pieces'].forEach(sel => { $(sel, shell).oninput = previewDrop; });
+
     $('#ml-add-stock', shell).onclick = () => {
-      const sel = $('#ml-stock', shell);
-      const m = rest.find(x => x.id === +sel.value);
+      const m = rest.find(x => x.id === +stockSel.value);
       const qty = Number($('#ml-stock-qty', shell).value);
       if (!m) return msg('Pick an item first', 'err');
       if (!(qty > 0)) return msg('How many did you use?', 'err');
-      lines.push({ kind: 'metal', material_id: m.id, description: m.name, qty, unit: m.unit, client_ref: newRef() });
-      sel.value = ''; $('#ml-stock-qty', shell).value = '';
+      const cutW = Number($('#ml-cut-w', shell).value) || 0;
+      const cutL = Number($('#ml-cut-l', shell).value) || 0;
+      lines.push({ kind: 'metal', material_id: m.id, description: m.name, qty, unit: m.unit,
+        cut_width_in: cutW, cut_length_in: cutL, pieces: Number($('#ml-cut-pieces', shell).value) || 1,
+        drop_location: $('#ml-drop-loc', shell).value.trim(),
+        cut_note: cutW && cutL ? `cut ${cutW}" × ${cutL}"` : '', client_ref: newRef() });
+      stockSel.value = ''; $('#ml-stock-qty', shell).value = '';
+      $('#ml-cut-w', shell).value = ''; $('#ml-cut-l', shell).value = '';
+      $('#ml-drop-preview', shell).innerHTML = ''; cutBox.hidden = true; sheetStock = null;
       renderLines();
     };
     $('#ml-add-solder', shell).onclick = () => {
@@ -585,6 +719,7 @@ function materialLogger({ work_order_id = null, job_id = null, label = '', isFab
     try {
       const r = await api('portal/usage', 'POST', payload);
       close(); msg(r.message, 'ok');
+      (r.drops || []).forEach(d => msg(`Racked ${d.tag}: ${d.size} (${d.area_sqft} sqft)`, 'ok'));
       (r.warnings || []).forEach(w => msg(w, 'err'));
       onDone && onDone();
     } catch (e) { msg(e.message, 'err'); }

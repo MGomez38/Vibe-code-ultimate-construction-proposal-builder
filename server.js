@@ -21,6 +21,7 @@ const { makeAuth, hashPassword, verifyPassword, parseCookies } = require('./auth
 const { sendMail, OUTBOX } = require('./mailer');
 const { readUpload, storeFile, removeFile, UPLOAD_DIR } = require('./lib/uploads');
 const backup = require('./lib/backup');
+const nesting = require('./lib/nesting');
 const T = require('./templates');
 
 const PORT = process.env.PORT || 3000;
@@ -413,8 +414,8 @@ async function portalApi(req, res, parts, body, user, url) {
       (company_id, work_order_id, job_id, employee_id, kind, material_id, metal_type, gauge, size,
        description, qty, unit, unit_cost, notes, logged_at, client_ref)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-    let n = 0, deduped = 0;
-    const warnings = [];
+    let n = 0, deduped = 0, scrapNote = 0;
+    const warnings = [], drops = [];
     for (const line of lines.slice(0, 40)) {
       const qty = Number(line.qty);
       if (!(qty > 0)) continue;
@@ -429,13 +430,47 @@ async function portalApi(req, res, parts, body, user, url) {
         String(line.size || '').slice(0, 60), desc, qty,
         String(line.unit || stock?.unit || 'ea').slice(0, 12), stock ? stock.unit_cost : 0,
         String(line.notes || '').slice(0, 240), safeStamp(line.at || payload.at), line.client_ref || '');
-      if (stock) {
+      const usageId = db.prepare('SELECT last_insert_rowid() id').get().id;
+
+      // Pulling a drop off the rack consumes that specific piece, not a new sheet.
+      if (line.remnant_id) {
+        const rem = db.prepare(`SELECT * FROM remnants WHERE id = ? AND status = 'available'`).get(line.remnant_id);
+        if (rem && (!myCompany || !rem.company_id || rem.company_id === myCompany)) {
+          db.prepare(`UPDATE remnants SET status = 'used', used_usage_id = ?, used_at = ? WHERE id = ?`)
+            .run(usageId, now(), rem.id);
+          db.prepare('UPDATE material_usage SET remnant_id = ? WHERE id = ?').run(rem.id, usageId);
+        }
+      } else if (stock) {
         // Clamping at zero keeps stock sane, but a pull bigger than the rack held
         // is usually a typo — say so rather than silently swallowing it.
         if (qty > stock.qty_on_hand) {
           warnings.push(`${desc}: logged ${qty} ${stock.unit} but only ${stock.qty_on_hand} were on hand — stock set to 0, check the count`);
         }
         db.prepare('UPDATE materials SET qty_on_hand = MAX(0, qty_on_hand - ?) WHERE id = ?').run(qty, stock.id);
+
+        // A full sheet cut down leaves a drop. Work it out and rack it.
+        const cutW = Number(line.cut_width_in) || 0, cutL = Number(line.cut_length_in) || 0;
+        if (cutW > 0 && cutL > 0 && stock.sheet_width_in > 0 && stock.sheet_length_in > 0) {
+          db.prepare('UPDATE material_usage SET cut_width_in = ?, cut_length_in = ? WHERE id = ?').run(cutW, cutL, usageId);
+          const calc = nesting.calculateDrops(stock.sheet_width_in, stock.sheet_length_in, cutW, cutL,
+            Number(line.pieces) || 1, Number(stock.min_usable_in) || 6);
+          if (calc.ok) {
+            const perSqft = stock.sheet_width_in * stock.sheet_length_in > 0
+              ? round2(stock.unit_cost / (stock.sheet_width_in * stock.sheet_length_in / 144) * 100) / 100 : 0;
+            for (const d of calc.drops) {
+              const tag = 'R-' + (db.prepare('SELECT COALESCE(MAX(id),1040) m FROM remnants').get().m + 1);
+              db.prepare(`INSERT INTO remnants (company_id, material_id, tag, metal_type, gauge, width_in, length_in,
+                  area_sqft, unit_cost, location, source_usage_id, created_by)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+                myCompany || stock.company_id, stock.id, tag,
+                String(line.metal_type || '') || stock.category, String(line.gauge || ''),
+                d.width, d.length, d.area_sqft, perSqft,
+                String(line.drop_location || stock.location || 'Drop Rack'), usageId, empId);
+              drops.push({ tag, size: nesting.describe(d), area_sqft: d.area_sqft });
+            }
+            if (calc.scrap_area_sqft > 0.5) scrapNote += calc.scrap_area_sqft;
+          }
+        }
       }
       n++;
     }
@@ -443,8 +478,10 @@ async function portalApi(req, res, parts, body, user, url) {
       // a replayed offline batch is a success, not a failure
       return deduped ? { ok: true, saved: 0, deduped, message: 'Already logged' } : { error: 'Nothing logged' };
     }
-    return { ok: true, saved: n, deduped, warnings,
-      message: `Logged ${n} line${n === 1 ? '' : 's'}${warnings.length ? ` · ${warnings.length} stock warning${warnings.length === 1 ? '' : 's'}` : ''}` };
+    return { ok: true, saved: n, deduped, warnings, drops, scrap_sqft: round2(scrapNote),
+      message: `Logged ${n} line${n === 1 ? '' : 's'}`
+        + (drops.length ? ` · ${drops.length} drop${drops.length === 1 ? '' : 's'} racked (${drops.map(d => d.size).join(', ')})` : '')
+        + (warnings.length ? ` · ${warnings.length} stock warning${warnings.length === 1 ? '' : 's'}` : '') };
   }
 
   function saveCard(b) {
@@ -479,7 +516,7 @@ async function portalApi(req, res, parts, body, user, url) {
     });
   }
 
-  if (section === 'clock' && req.method === 'POST') {
+  if (section === 'clock' && req.method === 'POST' && parts[3] !== 'undo') {
     const r = parts[3] === 'in' ? clockIn(body) : parts[3] === 'out' ? clockOut(body) : { error: 'Unknown action' };
     if (r.error) return json(res, 409, r);
     auth.audit(user, 'clock_' + parts[3], body.job_id ? `job ${body.job_id}` : '');
@@ -502,6 +539,84 @@ async function portalApi(req, res, parts, body, user, url) {
     }
     if (results.length) auth.audit(user, 'offline_sync', `${results.filter(r => r.ok).length}/${results.length} accepted`);
     return json(res, 200, { results });
+  }
+
+  /**
+   * The foreman's day: every punch so far, totalled per job, plus the jobs he
+   * is most likely to jump to next. Built for someone switching six times a day.
+   */
+  if (section === 'day' && req.method === 'GET') {
+    const day = url.searchParams.get('date') || today();
+    const entries = db.prepare(`SELECT t.*, j.job_number, j.title AS job_title FROM time_entries t
+      LEFT JOIN jobs j ON j.id = t.job_id
+      WHERE t.employee_id = ? AND date(t.clock_in) = ? ORDER BY t.clock_in`).all(empId, day);
+
+    const totals = new Map();
+    let worked = 0;
+    for (const e of entries) {
+      const end = e.clock_out ? new Date(e.clock_out.replace(' ', 'T') + 'Z') : new Date();
+      const hrs = Math.max(0, (end - new Date(e.clock_in.replace(' ', 'T') + 'Z')) / 3600e3);
+      e.hours = round2(hrs);
+      e.running = !e.clock_out;
+      worked += hrs;
+      const key = e.job_id || 'shift';
+      if (!totals.has(key)) {
+        totals.set(key, { job_id: e.job_id, job_number: e.job_number, job_title: e.job_title, hours: 0, punches: 0 });
+      }
+      const t = totals.get(key);
+      t.hours = round2(t.hours + hrs); t.punches++;
+    }
+
+    // jump targets: today's schedule first, then whatever he has touched lately
+    const scheduled = db.prepare(`SELECT DISTINCT j.id, j.job_number, j.title FROM schedule s
+      JOIN jobs j ON j.id = s.job_id WHERE s.employee_id = ? AND s.date = ?`).all(empId, day);
+    const recent = db.prepare(`SELECT DISTINCT j.id, j.job_number, j.title FROM time_entries t
+      JOIN jobs j ON j.id = t.job_id
+      WHERE t.employee_id = ? AND t.clock_in >= datetime('now','-14 days')
+      ORDER BY t.id DESC LIMIT 8`).all(empId);
+    // top up with the rest of the entity's live jobs, so a foreman can jump to
+    // something he has not touched yet without hunting through a menu
+    const others = db.prepare(`SELECT j.id, j.job_number, j.title FROM jobs j
+      WHERE j.status IN ('planned','in_progress') ${myCompany ? 'AND (j.company_id = ? OR j.company_id IS NULL)' : ''}
+      ORDER BY j.status = 'in_progress' DESC, j.job_number`).all(...coParams);
+
+    const seen = new Set();
+    const quick = [];
+    for (const j of [...scheduled, ...recent, ...others]) {
+      if (seen.has(j.id)) continue;
+      seen.add(j.id);
+      const t = totals.get(j.id);
+      quick.push({ ...j, today_hours: t ? t.hours : 0, scheduled: scheduled.some(s => s.id === j.id) });
+    }
+
+    const open = entries.find(e => e.running) || null;
+    const last = entries[entries.length - 1] || null;
+    return json(res, 200, {
+      date: day, entries, open,
+      by_job: [...totals.values()].sort((a, b) => b.hours - a.hours),
+      total_hours: round2(worked),
+      quick_jobs: quick.slice(0, 8),
+      // a mis-tap is only undoable while it is still obviously a mis-tap
+      can_undo: !!(last && last.running && (Date.now() - new Date(last.clock_in.replace(' ', 'T') + 'Z')) < 20 * 60e3),
+    });
+  }
+
+  /** Undo a mis-tapped switch: drop the punch just made and reopen the one before it. */
+  if (section === 'clock' && parts[3] === 'undo' && req.method === 'POST') {
+    const last = db.prepare('SELECT * FROM time_entries WHERE employee_id = ? ORDER BY id DESC LIMIT 1').get(empId);
+    if (!last) return json(res, 404, { error: 'Nothing to undo' });
+    if (!last.clock_out === false) return json(res, 409, { error: 'That punch is already closed out' });
+    const age = Date.now() - new Date(last.clock_in.replace(' ', 'T') + 'Z');
+    if (age > 20 * 60e3) return json(res, 409, { error: 'Too long ago to undo — ask the office to fix it' });
+
+    // whatever was closed at exactly this punch's start was the previous job
+    const previous = db.prepare(`SELECT * FROM time_entries WHERE employee_id = ? AND clock_out = ? AND id < ?
+      ORDER BY id DESC LIMIT 1`).get(empId, last.clock_in, last.id);
+    db.prepare('DELETE FROM time_entries WHERE id = ?').run(last.id);
+    if (previous) db.prepare('UPDATE time_entries SET clock_out = NULL WHERE id = ?').run(previous.id);
+    auth.audit(user, 'clock_undo', `removed punch ${last.id}${previous ? `, reopened ${previous.id}` : ''}`);
+    return json(res, 200, { ok: true, reopened: !!previous,
+      message: previous ? 'Put you back on the previous job' : 'Punch removed — you are clocked out' });
   }
 
   if (section === 'schedule' && req.method === 'GET') {
@@ -611,6 +726,17 @@ async function portalApi(req, res, parts, body, user, url) {
    * Material logged at the bench: what metal, what gauge, how much, and how
    * many inches of solder. Linking a line to stock deducts it from inventory.
    */
+  /** What would be left over — shown live as the worker types the cut size. */
+  if (section === 'dropcheck' && req.method === 'POST') {
+    const stock = body.material_id ? db.prepare('SELECT * FROM materials WHERE id = ?').get(body.material_id) : null;
+    const sheetW = Number(body.sheet_width_in) || stock?.sheet_width_in || 0;
+    const sheetL = Number(body.sheet_length_in) || stock?.sheet_length_in || 0;
+    if (!sheetW || !sheetL) return json(res, 200, { ok: false, error: 'That stock has no sheet size on file' });
+    return json(res, 200, nesting.calculateDrops(sheetW, sheetL,
+      Number(body.cut_width_in), Number(body.cut_length_in), Number(body.pieces) || 1,
+      Number(stock?.min_usable_in) || 6));
+  }
+
   if (section === 'usage') {
     if (req.method === 'GET') {
       const woId = Number(url.searchParams.get('work_order_id')) || null;
@@ -643,8 +769,19 @@ async function portalApi(req, res, parts, body, user, url) {
     }
   }
 
+  /** Drops available on the rack, so the bench can grab one instead of a new sheet. */
+  if (section === 'remnants' && req.method === 'GET') {
+    return json(res, 200, db.prepare(`SELECT r.id, r.tag, r.metal_type, r.gauge, r.width_in, r.length_in,
+        r.area_sqft, r.location, m.name AS material_name
+      FROM remnants r LEFT JOIN materials m ON m.id = r.material_id
+      WHERE r.status = 'available' ${myCompany ? 'AND (r.company_id = ? OR r.company_id IS NULL)' : ''}
+      ORDER BY r.area_sqft DESC`).all(...coParams));
+  }
+
   if (section === 'materials' && req.method === 'GET') {
-    return json(res, 200, db.prepare(`SELECT id, sku, name, category, unit, qty_on_hand, reorder_point, location
+    // sheet sizes come through so the bench can work out the drop on a cut-down
+    return json(res, 200, db.prepare(`SELECT id, sku, name, category, unit, qty_on_hand, reorder_point, location,
+        sheet_width_in, sheet_length_in
       FROM materials WHERE 1=1 ${coFilter} ORDER BY name`).all(...coParams));
   }
 
@@ -1338,6 +1475,49 @@ async function adminApi(req, res, parts, body, query, user, url, scope) {
     db.prepare(`UPDATE purchase_orders SET status = 'received', received_at = ? WHERE id = ?`).run(now(), po.id);
     auth.audit(user, 'po_received', po.po_number);
     return json(res, 200, { ok: true });
+  }
+
+  // ---- the drop rack ----
+  if (resource === 'remnants') {
+    if (method === 'GET' && !idOrAction) {
+      const status = query.get('status') || 'available';
+      const rows = db.prepare(`SELECT r.*, m.name AS material_name, m.sku, e.name AS created_by_name
+        FROM remnants r LEFT JOIN materials m ON m.id = r.material_id LEFT JOIN employees e ON e.id = r.created_by
+        WHERE ${status === 'all' ? '1=1' : 'r.status = ?'} AND ${SC.where(scope, 'r').sql}
+        ORDER BY r.status = 'available' DESC, r.area_sqft DESC`)
+        .all(...(status === 'all' ? [] : [status]), ...SW.params);
+      const available = rows.filter(r => r.status === 'available');
+      return json(res, 200, {
+        rows,
+        totals: {
+          count: available.length,
+          area_sqft: round2(available.reduce((s, r) => s + r.area_sqft, 0)),
+          value: round2(available.reduce((s, r) => s + r.area_sqft * r.unit_cost, 0)),
+        },
+      });
+    }
+    if (method === 'PUT' && idOrAction) {
+      const r = db.prepare('SELECT * FROM remnants WHERE id = ?').get(idOrAction);
+      if (!r) return json(res, 404, { error: 'Not found' });
+      const fields = ['tag', 'metal_type', 'gauge', 'width_in', 'length_in', 'location', 'status', 'unit_cost'];
+      const data = {};
+      for (const f of fields) if (body[f] !== undefined) data[f] = body[f];
+      if (data.width_in || data.length_in) {
+        data.area_sqft = round2((Number(data.width_in ?? r.width_in) * Number(data.length_in ?? r.length_in)) / 144);
+      }
+      const keys = Object.keys(data);
+      if (!keys.length) return json(res, 400, { error: 'Nothing to update' });
+      db.prepare(`UPDATE remnants SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map(k => data[k]), r.id);
+      auth.audit(user, 'remnant_updated', `${r.tag} ${keys.join(', ')}`);
+      return json(res, 200, { ok: true });
+    }
+    if (method === 'DELETE' && idOrAction) {
+      const r = db.prepare('SELECT * FROM remnants WHERE id = ?').get(idOrAction);
+      if (!r) return json(res, 404, { error: 'Not found' });
+      db.prepare(`UPDATE remnants SET status = 'scrapped' WHERE id = ?`).run(r.id);
+      auth.audit(user, 'remnant_scrapped', r.tag);
+      return json(res, 200, { ok: true });
+    }
   }
 
   // ---- attachments ----
