@@ -54,17 +54,21 @@ main { padding: 16px 14px 20px; max-width: 720px; margin: 0 auto; }
 }
 .clock-card .time { font-family: var(--mono); font-size: 42px; font-weight: 700; letter-spacing: 1px; }
 .clock-card .date { color: #9fb0c3; font-size: 13px; margin-bottom: 6px; }
-.status-pill {
-  display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 99px;
-  font-size: 14px; font-weight: 700; margin: 10px 0 4px;
+/* "You are working on ___" — the one thing a guy on a ladder needs to read at arm's length */
+.now-big {
+  background: rgba(46,158,107,.16); border: 2px solid rgba(126,226,176,.45);
+  border-radius: 14px; padding: 16px 14px; margin: 14px 0 18px;
 }
-.status-pill.on { background: rgba(46,158,107,.18); color: #7ee2b0; }
-.status-pill.off { background: rgba(255,255,255,.09); color: #9fb0c3; }
-.status-pill i { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
-.status-pill.on i { animation: blink 2s infinite; }
+.now-big.off { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.16); }
+.now-label {
+  font-size: 13px; font-weight: 700; color: #7ee2b0; text-transform: uppercase; letter-spacing: 1px;
+}
+.now-big.off .now-label { color: #9fb0c3; }
+.now-job { font-size: 26px; font-weight: 800; line-height: 1.2; margin-top: 4px; }
+.now-big.off .now-job { color: #cfdae6; }
+.now-time { font-size: 15px; color: #cfdae6; margin-top: 8px; }
+.now-time b { color: var(--amber); font-weight: 800; }
 @keyframes blink { 50% { opacity: .35; } }
-.on-since { font-size: 13px; color: #9fb0c3; margin-bottom: 14px; }
-.on-since b { color: var(--amber); font-family: var(--mono); }
 
 select, input, textarea {
   width: 100%; padding: 13px 14px; font-size: 15px; font-family: inherit;
@@ -158,6 +162,7 @@ textarea { min-height: 84px; resize: vertical; }
   background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 15px; text-align: center;
 }
 .hstat .n { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.hstat .n small { font-size: 14px; font-weight: 700; color: var(--mist); margin-left: 4px; }
 .hstat .l { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--mist); font-weight: 700; }
 .tsrow {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
@@ -166,7 +171,7 @@ textarea { min-height: 84px; resize: vertical; }
 .tsrow:last-child { border-bottom: 0; }
 .tsrow .l1 { font-weight: 650; font-size: 14px; }
 .tsrow .l2 { font-size: 12.5px; color: var(--mist); font-family: var(--mono); }
-.tsrow .hh { font-family: var(--mono); font-weight: 750; font-size: 16px; }
+.tsrow .hh { font-family: var(--mono); font-weight: 750; font-size: 14px; white-space: nowrap; }
 .tsrow .hh.live { color: var(--green); }
 
 /* bottom tabs */
@@ -323,26 +328,28 @@ textarea { min-height: 84px; resize: vertical; }
 
 /* one-tap job switching — built for a foreman who does this all day */
 .jump-label {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px;
-  color: #9fb0c3; text-align: left; margin: 16px 0 8px; font-weight: 700;
+  font-size: 14px; color: #cfdae6; text-align: left; margin: 4px 0 10px; font-weight: 700;
 }
-.jumps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* One tile per row. Two columns squeezed job names down to something you had to squint at. */
+.jumps { display: grid; grid-template-columns: 1fr; gap: 10px; }
 .jump {
-  display: flex; flex-direction: column; gap: 2px; text-align: left;
-  background: var(--ink-2); border: 1px solid #2b3d52; border-radius: 12px;
-  padding: 11px 12px; cursor: pointer; font-family: inherit; color: #cfd8e3;
+  display: flex; flex-direction: column; gap: 3px; text-align: left;
+  background: var(--ink-2); border: 2px solid #2b3d52; border-radius: 12px;
+  padding: 15px 16px; cursor: pointer; font-family: inherit; color: #cfd8e3;
   transition: background .12s, border-color .12s;
 }
 .jump:active { transform: translateY(1px); }
 .jump.on { background: rgba(245,165,36,.16); border-color: var(--amber); }
 .jump.busy { opacity: .5; }
-.jump .jn { font-family: var(--mono); font-size: 13px; font-weight: 800; color: #fff; }
+/* Job name leads — the crew knows "Riverside Medical", not "J-1042". */
+.jump .jt { font-size: 18px; font-weight: 750; line-height: 1.25; color: #fff; }
+.jump .jn { font-family: var(--mono); font-size: 12px; font-weight: 700; color: #8fa3b8; }
 .jump.on .jn { color: var(--amber); }
-.jump .jt {
-  font-size: 12px; line-height: 1.3; color: #9fb0c3;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+.jump .jh { font-size: 13px; font-weight: 700; color: #7ee2b0; margin-top: 3px; }
+.jump .tick {
+  font-size: 12px; font-weight: 800; color: var(--amber);
+  text-transform: uppercase; letter-spacing: .8px; margin-bottom: 2px;
 }
-.jump .jh { font-size: 11px; font-weight: 700; color: #7ee2b0; margin-top: 2px; }
 .big-btn.undo { background: rgba(255,255,255,.12); color: #fff; }
 
 /* where the day went */
@@ -364,7 +371,7 @@ textarea { min-height: 84px; resize: vertical; }
 .tl-job { flex: 1; padding: 6px 0; min-width: 0; }
 .tl-job b { display: block; font-size: 14px; }
 .tl-job small { color: var(--mist); font-size: 12.5px; }
-.tl-hrs { font-family: var(--mono); font-weight: 750; font-size: 14px; padding-top: 6px; }
+.tl-hrs { font-family: var(--mono); font-weight: 750; font-size: 13px; padding-top: 6px; white-space: nowrap; }
 .tl.live .tl-hrs { color: var(--green); }
 
 /* offline banner */
@@ -414,4 +421,5 @@ textarea { min-height: 84px; resize: vertical; }
 @media (min-width: 720px) {
   main { padding: 22px 18px 30px; }
   .clock-card .time { font-size: 48px; }
+  .jumps { grid-template-columns: 1fr 1fr; }
 }

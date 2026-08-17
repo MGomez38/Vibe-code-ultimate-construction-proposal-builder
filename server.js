@@ -395,13 +395,15 @@ async function portalApi(req, res, parts, body, user, url) {
     if (open) db.prepare('UPDATE time_entries SET clock_out = ? WHERE id = ?').run(stamp, open.id);
     db.prepare('INSERT INTO time_entries (employee_id, job_id, entry_type, clock_in, notes, client_ref) VALUES (?,?,?,?,?,?)')
       .run(empId, job_id || null, job_id ? 'job' : 'shift', stamp, notes || '', client_ref || '');
-    return { ok: true, message: job_id ? 'Clocked onto job' : 'Clocked in' };
+    // Say it the way the crew would say it — the toast is the only confirmation they get.
+    const title = job_id ? (db.prepare('SELECT title FROM jobs WHERE id = ?').get(job_id) || {}).title : null;
+    return { ok: true, message: title ? `Your time started on ${title}` : 'Your time started' };
   }
   function clockOut({ at }) {
     const open = openEntry();
     if (!open) return { error: 'You are not clocked in' };
     db.prepare('UPDATE time_entries SET clock_out = ? WHERE id = ?').run(safeStamp(at), open.id);
-    return { ok: true, message: 'Clocked out — nice work' };
+    return { ok: true, message: 'Your time is stopped — nice work' };
   }
   /** Shared by the live logger and the offline queue drain. */
   function saveUsage(payload) {

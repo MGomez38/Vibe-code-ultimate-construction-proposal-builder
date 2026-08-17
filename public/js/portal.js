@@ -85,6 +85,22 @@ function elapsed(ts) {
   const mins = Math.max(0, Math.floor((Date.now() - parseTs(ts)) / 60000));
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
 }
+/** "2 hours 15 minutes" reads better than "2h 15m" for someone who does not live in apps. */
+function plainElapsed(ts) {
+  const mins = Math.max(0, Math.floor((Date.now() - parseTs(ts)) / 60000));
+  const h = Math.floor(mins / 60), m = mins % 60;
+  if (!mins) return 'less than a minute';
+  if (!h) return m === 1 ? '1 minute' : `${m} minutes`;
+  const hp = h === 1 ? '1 hour' : `${h} hours`;
+  return m ? `${hp} ${m} min` : hp;
+}
+function plainHours(hours) {
+  const total = Math.round((Number(hours) || 0) * 60);
+  const h = Math.floor(total / 60), m = total % 60;
+  if (!h) return `${m} min`;
+  return m ? `${h} hr ${m} min` : `${h} hr`;
+}
+
 function msg(t, kind = '') {
   const el = document.createElement('div');
   el.className = 'p-msg ' + kind;
@@ -173,32 +189,43 @@ async function pageHome() {
   const open = d.open_entry;
   const onJob = open ? open.job_id : null;
 
+  const jobName = open && open.job_title ? open.job_title : (open ? 'Shop work' : '');
+
   view.innerHTML = `
     <div class="pc clock-card">
       <div class="time" id="live-time"></div>
       <div class="date">${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}</div>
-      <div class="status-pill ${open ? 'on' : 'off'}"><i></i>${open ? 'On the clock' : 'Not clocked in'}</div>
-      ${open ? `<div class="on-since">Since ${fmtTime(open.clock_in)} · <b id="run">${elapsed(open.clock_in)}</b>${open.job_number ? ` on ${esc(open.job_number)}` : ' (general shift)'}</div>`
-             : '<div class="on-since">Tap a job to start the day.</div>'}
 
-      <div class="jump-label">${open ? 'Tap to switch — one tap, no menus' : 'Tap a job to clock in'}</div>
+      ${open ? `
+        <div class="now-big">
+          <div class="now-label">You are working on</div>
+          <div class="now-job">${esc(jobName)}</div>
+          <div class="now-time">Started at ${fmtTime(open.clock_in)} — <b id="run">${plainElapsed(open.clock_in)}</b> so far</div>
+        </div>`
+      : `<div class="now-big off">
+          <div class="now-job">You are not clocked in</div>
+          <div class="now-time">Tap the job you are working on to start</div>
+        </div>`}
+
+      <div class="jump-label">${open ? 'Working on something else now? Tap it.' : 'Tap the job you are working on'}</div>
       <div class="jumps">
         ${day.quick_jobs.map(j => `
           <button class="jump ${onJob === j.id ? 'on' : ''}" data-job="${j.id}">
-            <span class="jn">${esc(j.job_number)}</span>
+            ${onJob === j.id ? '<span class="tick">✓ working on this</span>' : ''}
             <span class="jt">${esc(j.title)}</span>
-            <span class="jh">${j.today_hours ? j.today_hours + 'h today' : (j.scheduled ? 'scheduled' : '—')}</span>
+            <span class="jn">${esc(j.job_number)}</span>
+            <span class="jh">${j.today_hours ? plainHours(j.today_hours) + ' today' : (j.scheduled ? "you're scheduled here" : '')}</span>
           </button>`).join('')}
         <button class="jump ${open && !onJob ? 'on' : ''}" data-job="">
-          <span class="jn">SHOP</span><span class="jt">General / shop time</span>
-          <span class="jh">${(day.by_job.find(b => !b.job_id) || {}).hours || 0}h today</span>
+          ${open && !onJob ? '<span class="tick">✓ working on this</span>' : ''}
+          <span class="jt">Shop / yard work</span>
+          <span class="jn">Not a job</span>
+          <span class="jh">${(day.by_job.find(b => !b.job_id) || {}).hours ? plainHours(day.by_job.find(b => !b.job_id).hours) + ' today' : ''}</span>
         </button>
       </div>
 
-      <div class="${open ? 'btn-row' : ''}" style="margin-top:14px">
-        ${open ? '<button class="big-btn stop" id="btn-out">Clock Out</button>' : ''}
-        ${day.can_undo ? '<button class="big-btn undo" id="btn-undo">↶ Undo last</button>' : ''}
-      </div>
+      ${open ? '<button class="big-btn stop" id="btn-out" style="margin-top:16px">Stop — I am done for the day</button>' : ''}
+      ${day.can_undo ? '<button class="big-btn undo" id="btn-undo" style="margin-top:8px">Tapped the wrong one? Undo it</button>' : ''}
     </div>
 
     <div class="pc">
@@ -241,7 +268,7 @@ async function pageHome() {
   const tick = () => {
     const t = $('#live-time'); if (!t) return false;
     t.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const r = $('#run'); if (r && open) r.textContent = elapsed(open.clock_in);
+    const r = $('#run'); if (r && open) r.textContent = plainElapsed(open.clock_in);
     return true;
   };
   tick();
@@ -272,6 +299,7 @@ async function pageHome() {
 
   const outBtn = $('#btn-out');
   if (outBtn) outBtn.onclick = async () => {
+    if (!confirm('Stop your time for the day?\n\nTap Cancel if you are just moving to another job — tap that job instead.')) return;
     if (!navigator.onLine) {
       enqueue('clock_out', {});
       return msg('Clock-out saved on this phone — will sync when you have signal', 'ok');
@@ -314,21 +342,21 @@ async function pageHours() {
 
   view.innerHTML = `
     <div class="hours-top">
-      <div class="hstat"><div class="n">${Math.round(thisWeek * 10) / 10}</div><div class="l">This week</div></div>
-      <div class="hstat"><div class="n">${Math.round(total * 10) / 10}</div><div class="l">Last 14 days</div></div>
+      <div class="hstat"><div class="n">${Math.round(thisWeek * 10) / 10}<small>hrs</small></div><div class="l">This week</div></div>
+      <div class="hstat"><div class="n">${Math.round(total * 10) / 10}<small>hrs</small></div><div class="l">Last 14 days</div></div>
     </div>
     <div class="pc">
-      <h3>Today, Punch By Punch<span class="r">${day.total_hours} hrs</span></h3>
+      <h3>Where Your Time Went Today<span class="r">${day.total_hours} hrs</span></h3>
       ${day.entries.length ? `<div class="timeline">
         ${day.entries.map(e => `
           <div class="tl ${e.running ? 'live' : ''}">
             <span class="tl-time">${fmtTime(e.clock_in)}<small>${e.clock_out ? fmtTime(e.clock_out) : 'now'}</small></span>
             <span class="tl-bar"></span>
             <span class="tl-job">
-              <b>${esc(e.job_number || 'Shop / general')}</b>
-              <small>${esc(e.job_title || '')}</small>
+              <b>${esc(e.job_title || 'Shop / yard work')}</b>
+              <small>${esc(e.job_number || 'Not a job')}</small>
             </span>
-            <span class="tl-hrs">${e.hours}h</span>
+            <span class="tl-hrs">${plainHours(e.hours)}</span>
           </div>`).join('')}
       </div>` : '<div class="p-empty">Nothing today yet.</div>'}
     </div>
@@ -336,9 +364,9 @@ async function pageHours() {
     <div class="pc"><h3>Last Two Weeks</h3>
       ${rows.length ? rows.map(r => `
         <div class="tsrow">
-          <div><div class="l1">${esc(r.job_number ? r.job_number + ' — ' + r.job_title : 'General shift')}</div>
-          <div class="l2">${parseTs(r.clock_in).toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${fmtTime(r.clock_in)} → ${r.clock_out ? fmtTime(r.clock_out) : 'now'}</div></div>
-          <div class="hh ${r.clock_out ? '' : 'live'}">${r.hours !== null ? r.hours : '●'}</div>
+          <div><div class="l1">${esc(r.job_title || 'Shop / yard work')}</div>
+          <div class="l2">${parseTs(r.clock_in).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} · ${fmtTime(r.clock_in)} to ${r.clock_out ? fmtTime(r.clock_out) : 'now'}</div></div>
+          <div class="hh ${r.clock_out ? '' : 'live'}">${r.hours !== null ? plainHours(r.hours) : '●'}</div>
         </div>`).join('') : '<div class="p-empty">No time recorded in the last two weeks.</div>'}
       <div class="p-empty" style="padding:14px 0 0;font-size:12.5px">Something look wrong? Tell the office — they can correct any punch.</div>
     </div>`;
